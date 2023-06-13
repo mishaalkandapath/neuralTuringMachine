@@ -1,6 +1,6 @@
 # An NTM for language tasks
 ## Overview:
-This is a project where I seek to understand the transformer architecture in depth annd modify it with another architecture (NTM, Graves et al., 2016) to hopefully produce some interesting results in search problems prompted with language. 
+This is a project where I seek to understand the transformer architecture in depth annd modify it with another architecture (NTM, Graves et al., 2016) to hopefully produce some interesting results in search problems prompted with language. I also intend to build everything from scratch and in JAX.
 ## Project Goals:
 - [ ] Take notes throughout the dev process
 - [ ] Understand Attention Mechanisms in seq2seq models
@@ -42,3 +42,5 @@ The first attention allows for understanding context from the input in producing
 Three major points were listed by the paper, of which the first two are total computational complexity per layer and the other is increased parallizability. <br>
 The third and major one is the "path length between long-range dependencies between the network", i.e, the length signals (forward and backward) have to travel as a function of positions in the input and output is less than preceding methods. Thus, it is easier to learn long range dependencies due to this shorter traversal length. <br>
 As a plus, it also allows for more interpretability.
+### Multihead Attention
+Instead of performing attention just once, the transformer model decides its better to compute h parallel attentions. To induce a fake richness in "perspective" you first transform the keys, values, and queries to a dk, dv, dq dimensional spaces h times (differently). Then conduct self attention on all of them (so h perspectives). We then concatenate the information and convert it back into dmodel space using another transformation (linear). 
