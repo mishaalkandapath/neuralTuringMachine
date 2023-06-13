@@ -33,3 +33,17 @@ from jax import grad, jit, vmap, pmap
 #jax vmap:
 # takes a function, an in_axes parameter that specifies which input axes to map over, and an out_axes parameter that specifies where the mapped axis should appear in the output
 # returns a new function
+
+@jit
+def scaled_dot_attention(queries, keys, values):
+    # the scaling factor is to protect softmax from exploding, giving us trashy gradients. 
+    # so we scale by dimension as magnitudes prop. dimension?
+    #queries are the outputs from the decoder, keys and values are from the encoder. 
+    
+    compatibilities = jnp.softmax(jnp.matmul(queries, keys.T)/jnp.sqrt(queries.shape[-1]))
+    return jnp.matmul(compatibilities, values)
+
+# @jit 
+# def multihead_attention(queries, keys, values):
+
+
