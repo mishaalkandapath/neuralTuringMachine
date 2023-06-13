@@ -43,7 +43,15 @@ def scaled_dot_attention(queries, keys, values):
     compatibilities = jnp.softmax(jnp.matmul(queries, keys.T)/jnp.sqrt(queries.shape[-1]))
     return jnp.matmul(compatibilities, values)
 
-# @jit 
-# def multihead_attention(queries, keys, values):
-
-
+@jit 
+def multihead_attention(queries, keys, values, weights_q, weights_k, weights_v, weight_o, num_heads=8):
+    # the queries and keys are of dimension dmodel (the embedding dimension)
+    # weights_q, k, and v are 3 dimensional matrices of dimension num_heads x dmodel x dk (dv)
+    #weight_o is of size num_heads*dv x dmodel
+    batched_scaled_dot_attention = vmap(scaled_dot_attention)
+    batched_queries = queries @ weights_q # vectorize over the heads dimensions
+    batched_keys = keys @ weights_k
+    batched_values = values @ weights_v
+    batched_attention = batched_scaled_dot_attention(batched_queries, batched_keys, batched_values)
+    return batched_attention.reshape((num_heads*64, 512)) @ weight_o #dv, dk, dmodel/h = 64
+                                     
