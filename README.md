@@ -42,5 +42,35 @@ The first attention allows for understanding context from the input in producing
 Three major points were listed by the paper, of which the first two are total computational complexity per layer and the other is increased parallizability. <br>
 The third and major one is the "path length between long-range dependencies between the network", i.e, the length signals (forward and backward) have to travel as a function of positions in the input and output is less than preceding methods. Thus, it is easier to learn long range dependencies due to this shorter traversal length. <br>
 As a plus, it also allows for more interpretability.
+
 ### Multihead Attention
-Instead of performing attention just once, the transformer model decides its better to compute h parallel attentions. To induce a fake richness in "perspective" you first transform the keys, values, and queries to a dk, dv, dq dimensional spaces h times (differently). Then conduct self attention on all of them (so h perspectives). We then concatenate the information and convert it back into dmodel space using another transformation (linear). 
+Instead of performing attention just once, the transformer model decides its better to compute h parallel attentions. To induce a fake richness in "perspective" you first transform the keys, values, and queries to dk, dv, dq dimensional spaces h times (differently). Then conduct self attention on all of them (so h perspectives). We then concatenate the information and convert it back into dmodel space using another transformation (linear). 
+
+### Using Attention
+1. encoder-decoder attention, where the queries are from the previous decoder layer, rest from encoder output.
+2. self attention in the encoder, where each position in the encoder can attend to all positions in the previous encoding layer. queries, keys and values come from the previous layer
+3. self attention in the decoder, each position in the decoder to attend to upto all positions including current. Information is to flow forwards only, and this is ensured by setting all illegal values in the value vector to -inf.
+
+### Position-Wise Feed Forward NN
+in the original paper, apart from the attention parts in a sublayer, they consist of a Position wise feed forward nn too given by:
+<p align="center">
+  $$ FFN(x) = max(0, xW_{1} + b_{1})W_{2} + b_{2}$$
+</p>
+<p>
+  This is applied to every position the same way but with different weights. In the paper, $W_{1}$ is of dimensions $d_{model} \times d_{ff} = 512 \times 2048$ and $W_{2}$ is of the opposite dimension. 
+</p>
+
+### Overall Architecture
+<p align="center">
+  <img src="https://github.com/mishaalkandapath/neuralTuringMachine/blob/main/notes/transarch.png" alt="self_attention" width=50% />
+</p>
+
+### Additional Information
+1. Softmax is used on the decoder output to probabilities and a learned linear transformation.
+2. The weights of this linear transformation is shared with the transformations used in the embedding layers to convert input and output tokens to vectors of dimension $d_{model}$. It is multiplied by the square of dimension in the embedding layers.
+3. Since this architecture is not recurrent, some positional information is inserted. <b> Positional Encodings </b> are added to the inputs to the input and output embedders. The positional encodings are of the same dimensions, so they can be summed. <br>
+<p align="center">
+    $$ PE_{(pos, 2i)} = sin (pos/1000^{2i/d_{model}}) $$ # for 2i+1, replace with cos. 
+</p>
+i represents the dimension in the vector. <br>
+A learned positional encoding was not preferred due to similar performances, and also these sinusoidal waves can help generalize to lengtsh longer than encountered in training. 
