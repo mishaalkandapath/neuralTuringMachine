@@ -48,6 +48,7 @@ def multihead_attention(queries, keys, values, weights_q, weights_k, weights_v, 
     # the queries and keys are of dimension dmodel (the embedding dimension)
     # weights_q, k, and v are 3 dimensional matrices of dimension num_heads x dmodel x dk (dv)
     #weight_o is of size num_heads*dv x dmodel
+    #not parallelizing, i dont got the hardware for that
     batched_scaled_dot_attention = vmap(scaled_dot_attention)
     batched_queries = queries @ weights_q # vectorize over the heads dimensions
     batched_keys = keys @ weights_k
