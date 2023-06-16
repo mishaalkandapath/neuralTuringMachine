@@ -60,17 +60,22 @@ in the original paper, apart from the attention parts in a sublayer, they consis
   This is applied to every position the same way but with different weights. In the paper, $W_{1}$ is of dimensions $d_{model} \times d_{ff} = 512 \times 2048$ and $W_{2}$ is of the opposite dimension. 
 </p>
 
+### Input
+Each vector represents the semantics and position of a token. The first step is to learn embeddings for each token and this is supplied into the encoders. Then the decoder produces one word at a time, which is fed back into the output embedder ot make the whole thing a chain. At the very beginning, there is nothing in the output embedder so a <SOS> token is provided. The decoder produces output probabilities of different words in vocabulary. Highes is chosen, fed into the output embedder and the process continues. 
+
 ### Overall Architecture
 <p align="center">
   <img src="https://github.com/mishaalkandapath/neuralTuringMachine/blob/main/notes/transarch.png" alt="self_attention" width=50% />
-</p>
+</p><br>
+The encoders all stacked together, finally producing the feature matrix which is fed into the decoder layers.
 
 ### Additional Information
 1. Softmax is used on the decoder output to probabilities and a learned linear transformation.
 2. The weights of this linear transformation is shared with the transformations used in the embedding layers to convert input and output tokens to vectors of dimension $d_{model}$. It is multiplied by the square of dimension in the embedding layers.
 3. Since this architecture is not recurrent, some positional information is inserted. <b> Positional Encodings </b> are added to the inputs to the input and output embedders. The positional encodings are of the same dimensions, so they can be summed. <br>
 <p align="center">
-    $$ PE_{(pos, 2i)} = sin (pos/1000^{2i/d_{model}}) $$ # for 2i+1, replace with cos. 
+    $$ PE_{(pos, 2i)} = sin (pos/1000^{2i/d_{model}}) $$ 
 </p>
+for 2i+1, replace with cos. <br>
 i represents the dimension in the vector. <br>
 A learned positional encoding was not preferred due to similar performances, and also these sinusoidal waves can help generalize to lengtsh longer than encountered in training. 
