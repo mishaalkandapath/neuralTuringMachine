@@ -102,3 +102,13 @@ def encoder(I, Wq, Wk, Wv, persp_Wq, persp_Wk, persp_Wv, persp_Wo, G1, b1, G2, b
     O = layer_norm(O, G2, b2)
 
     return O
+
+def decoder(I, enc_out, Wq, Wk, Wv, W_dec_q, W_dec_k, W_enc_v,persp_Wq, persp_Wk, persp_Wv, persp_Wo, persp_enc_Wq, persp_enc_Wk, persp_dec_Wv, persp_dec_Wo, G1, b1, G2, b2, G3, b3, W_ff1, W_ff2, b_ff1, b_ff2):
+    # i know there is repeated code, I will rearrange in a while 
+    Queries, Keys, Values = I @ Wq, I @ Wk, I @ Wv #where I is the matrix of input tokens
+    O = multihead_attention(Queries, Keys, Values, persp_Wq, persp_Wk, persp_Wv, persp_Wo) + I
+    #layer norm 
+    O = layer_norm(O, G1, b1)
+
+    #attention using the encoder output on decoder values
+    dec_Queries, dec_Keys, dec_Values =  @ W_dec_q, enc_out @ W_enc_k, enc_out @ W_enc_v
