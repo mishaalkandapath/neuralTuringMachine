@@ -1,4 +1,3 @@
-import numpy as np
 import jax
 from jax import numpy as jnp
 from jax import make_jaxpr
@@ -41,13 +40,12 @@ def scaled_dot_attention(queries, keys, values):
     #queries are the outputs from the decoder, keys and values are from the encoder. 
     
     compatibilities = jnp.softmax(jnp.matmul(queries, keys.T)/jnp.sqrt(queries.shape[-1]))
-    return jnp.matmul(compatibilities, values)
-
+    return compatibilities @ values 
 @jit 
 def multihead_attention(queries, keys, values, weights_q, weights_k, weights_v, weight_o, num_heads=8):
     # the queries and keys are of dimension dmodel (the embedding dimension)
     # weights_q, k, and v are 3 dimensional matrices of dimension num_heads x dmodel x dk (dv)
-    #weight_o is of size num_heads*dv x dmodel
+    #weight_o is of size num_heads*dv x dmodel, and converts the concatenated outputs of the heads into the dmodel dimension - a linear transformation
     #not parallelizing, i dont got the hardware for that
     batched_scaled_dot_attention = vmap(scaled_dot_attention)
     batched_queries = queries @ weights_q # vectorize over the heads dimensions
@@ -56,3 +54,34 @@ def multihead_attention(queries, keys, values, weights_q, weights_k, weights_v, 
     batched_attention = batched_scaled_dot_attention(batched_queries, batched_keys, batched_values)
     return batched_attention.reshape((num_heads*64, 512)) @ weight_o #dv, dk, dmodel/h = 64
                                      
+@jit
+def layer_norm(X, G, B, eps=1e-6):
+    #UNDERSTAND WHY THIS WORKS - for now, something to do with computational time, exploding gradients or something
+    mean_mat = jnp.mean(X, axis=-1, keepdims=True) #keepdims for proper broadcasting
+    std_mat = jnp.std(X, axis=-1, keepdims=True)
+    return G*(X-mean_mat)/(std_mat+eps) + B # G and B are learnable to tone down normalization when necessary
+
+# important to have pure functions
+@jit
+def encoder(I, Wq, Wk, Wv, persp_Wq, persp_Wk, persp_Wv, persp_Wo, G1, B1, G2, B2):
+    """
+    An input is passed in which is a matrix, each row is a vector belonging to one token - its the token embedding or the output of the previous layer
+    - each vector is of dimension dmodel=512 in paper. 
+    """
+    # first component the multi head self-attention 
+    #it takes as input some queries, keys and values that you produce using linear transformations on the input I
+    # the queries, keys and values are of dimension dmodel
+    Queries, Keys, Values = I @ Wq, I @ Wk, I @ Wv #where I is the matrix of input tokens
+    O = multihead_attention(Queries, Keys, Values, persp_Wq, persp_Wk, persp_Wv, persp_Wo) + I
+    #layer norm 
+    O = layer_norm(O, G1, B1)
+
+
+
+
+         
+        
+
+
+    def decoder():
+        pass
