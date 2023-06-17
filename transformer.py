@@ -106,6 +106,7 @@ def encoder(I, Wq, Wk, Wv,
 
     return O
 
+@jit
 def decoder(I, enc_out, Wq, Wk, Wv, W_dec_q, W_enc_k, W_enc_v, 
             persp_Wq, persp_Wk, persp_Wv, persp_Wo, persp_dec_Wq, persp_enc_Wk, persp_enc_Wv, persp_dec_Wo, 
             G1, b1, G2, b2, G3, b3, 
@@ -230,5 +231,37 @@ def transformer_init(max_tokens=512, num_layers=6, num_heads=8, dmodel=512, dff=
 
     #return all these matrices
     return enc_WQ, enc_WK, enc_WV, enc_persp_WQ, enc_persp_WK, enc_persp_WV, enc_G1, enc_b1, enc_G2, enc_b2, enc_G3, enc_b3, enc_W_ff1, enc_W_ff2, enc_b_ff1, enc_b_ff2, dec_WQ, dec_WK, dec_WV, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_G3, dec_b3, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_enc_WQ, dec_enc_WK, dec_enc_WV, dec_enc_persp_WQ, dec_enc_persp_WK, dec_enc_persp_WV, enc_persp_WO, dec_persp_WO, dec_enc_persp_WO
-    
 
+def transformer_forward_encoder(X, encoder_params, num_layers=6):
+    #unpack params
+    enc_WQ, enc_WK, enc_WV, enc_persp_WQ, enc_persp_WK, enc_persp_WV, enc_G1, enc_b1, enc_G2, enc_b2, enc_G3, enc_b3, enc_W_ff1, enc_W_ff2, enc_b_ff1, enc_b_ff2, enc_persp_WO = encoder_params
+
+    #pass input through the encoders:
+    prev_out = X # we start with the input as the one to feed into 
+    for i in range(num_layers):
+        prev_out = encoder(prev_out, enc_WQ[i], enc_WK[i], enc_WV[i], 
+                           enc_persp_WQ[i], enc_persp_WK[i], enc_persp_WV[i], enc_persp_WO[i], 
+                           enc_G1[i], enc_b1[i], enc_G2[i], enc_b2[i], enc_G3[i], enc_b3[i],
+                            enc_W_ff1[i], enc_W_ff2[i], enc_b_ff1[i], enc_b_ff2[i])
+    #pass final output through the decoders:
+    # oo think about a heirarchial transformer - where your predicting outputs by category level - what kind of sentence - what kind of word then - what is the word? etc
+
+    return prev_out
+
+def forward_pass_decoder(decoder_params, dmodel=512, max_tokens=512, num_layers=6):
+    # would it be possible to have the decoder be tuned per output, yea it doesnt make a difference hmm
+    #unpack params
+    dec_WQ, dec_WK, dec_WV, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_G3, dec_b3, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_enc_WQ, dec_enc_WK, dec_enc_WV, dec_enc_persp_WQ, dec_enc_persp_WK, dec_enc_persp_WV, dec_persp_WO, dec_enc_persp_WO = decoder_params
+
+    #pass input through the encoders:
+    prev_out = [None] + [-jnp.inf] * (max_tokens - 1) # replace None with the start token 
+    prev_out = jnp.ndarray(prev_out)
+    for i in range(num_layers):
+        prev_out = decoder(prev_out, dec_WQ[i], dec_WK[i], dec_WV[i],
+                           dec_enc_WQ[i], dec_enc_WK[i], dec_enc_WV[i],
+                           dec_persp_WQ[i], dec_persp_WK[i], dec_persp_WV[i], dec_persp_WO[i],
+                           dec_enc_persp_WQ[i], dec_enc_persp_WK[i], dec_enc_persp_WV[i], dec_enc_persp_WO[i],
+                           dec_G1[i], dec_b1[i], dec_G2[i], dec_b2[i], dec_G3[i], dec_b3[i],
+                           dec_W_ff1[i], dec_W_ff2[i], dec_b_ff1[i], dec_b_ff2[i])
+        
+    return prev_out
