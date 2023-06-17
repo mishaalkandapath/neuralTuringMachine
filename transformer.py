@@ -55,18 +55,39 @@ def multihead_attention(queries, keys, values, weights_q, weights_k, weights_v, 
     return batched_attention.reshape((num_heads*64, 512)) @ weight_o #dv, dk, dmodel/h = 64
                                      
 @jit
-def layer_norm(X, G, B, eps=1e-6):
+def layer_norm(X, G, b, eps=1e-6):
     #UNDERSTAND WHY THIS WORKS - for now, something to do with computational time, exploding gradients or something
     mean_mat = jnp.mean(X, axis=-1, keepdims=True) #keepdims for proper broadcasting
     std_mat = jnp.std(X, axis=-1, keepdims=True)
-    return G*(X-mean_mat)/(std_mat+eps) + B # G and B are learnable to tone down normalization when necessary
+    return G*(X-mean_mat)/(std_mat+eps) + b # G and B are learnable to tone down normalization when necessary
+
+@jit
+def ffn(X, W1, b1, W2, b2):
+    return jnp.maximum(0, X @ W1 + b1) @ W2 + b2
 
 # important to have pure functions
 @jit
-def encoder(I, Wq, Wk, Wv, persp_Wq, persp_Wk, persp_Wv, persp_Wo, G1, B1, G2, B2):
+def encoder(I, Wq, Wk, Wv, persp_Wq, persp_Wk, persp_Wv, persp_Wo, G1, b1, G2, b2, W_ff1, W_ff2, b_ff1, b_ff2):
     """
     An input is passed in which is a matrix, each row is a vector belonging to one token - its the token embedding or the output of the previous layer
     - each vector is of dimension dmodel=512 in paper. 
+    
+    @param I: the input matrix of tokens, each row is a token embedding
+    @param Wq: the weight matrix for the queries, of dimension dmodel x dmodel
+    @param Wk: the weight matrix for the keys, of dimension dmodel x dmodel
+    @param Wv: the weight matrix for the values, of dimension dmodel x dmodel
+    @param persp_Wq: the weight matrix for the queries, of dimension dmodel x dk
+    @param persp_Wk: the weight matrix for the keys, of dimension dmodel x dk
+    @param persp_Wv: the weight matrix for the values, of dimension dmodel x dv
+    @param persp_Wo: the weight matrix for the output, of dimension hdv x dmodel
+    @param G1: the gain matrix for the first layer norm, of dimension 512 x dmodel
+    @param b1: the bias matrix for the first layer norm, of dimension 512 x 1
+    @param G2: the gain matrix for the second layer norm, of dimension 512 x dmodel
+    @param b2: the bias matrix for the second layer norm, of dimension 512 x 1
+    @param W_ff1: the first weight matrix for the feed forward network, of dimension dmodel x dff
+    @param W_ff2: the second weight matrix for the feed forward network, of dimension dff x dmodel
+    @param b_ff1: the first bias matrix for the feed forward network, of dimension dff x 1
+    @param b_ff2: the second bias matrix for the feed forward network, of dimension dmodel x 1
     """
     # first component the multi head self-attention 
     #it takes as input some queries, keys and values that you produce using linear transformations on the input I
@@ -74,14 +95,10 @@ def encoder(I, Wq, Wk, Wv, persp_Wq, persp_Wk, persp_Wv, persp_Wo, G1, B1, G2, B
     Queries, Keys, Values = I @ Wq, I @ Wk, I @ Wv #where I is the matrix of input tokens
     O = multihead_attention(Queries, Keys, Values, persp_Wq, persp_Wk, persp_Wv, persp_Wo) + I
     #layer norm 
-    O = layer_norm(O, G1, B1)
+    O = layer_norm(O, G1, b1)
 
+    #feed forward network
+    O = ffn(O, W_ff1, b_ff1, W_ff2, b_ff2) + O
+    O = layer_norm(O, G2, b2)
 
-
-
-         
-        
-
-
-    def decoder():
-        pass
+    return O
