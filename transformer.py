@@ -309,3 +309,6 @@ if __name__ == "__main__":
     train_data, test_data = data[:int(0.8 * len(data))], data[int(0.8 * len(data)):]
 
     train_x, train_y = data_loader(train_data)
+    test_x, test_y = data_loader(test_data)
+
+    
