@@ -33,6 +33,9 @@ from jax import grad, jit, vmap, pmap
 # takes a function, an in_axes parameter that specifies which input axes to map over, and an out_axes parameter that specifies where the mapped axis should appear in the output
 # returns a new function
 
+char_to_idx = {}
+idx_to_char = {}
+
 @jit
 def scaled_dot_attention(queries, keys, values):
     # the scaling factor is to protect softmax from exploding, giving us trashy gradients. 
@@ -268,7 +271,41 @@ def forward_pass_decoder(decoder_params, encoder_out, dmodel=512, max_tokens=512
     return prev_out
 
 def transformer_train(X, Y, encoder_params, decoder_params, num_layers=6):
-    
+    pass
 
 def routine_start():
     pass
+
+def encode(text):
+    return [char_to_idx[ch] for ch in text]
+
+def decode(arr):
+    return "".join([idx_to_char[i] for i in arr])
+
+def data_loader(data, batch_size=4, block_size=8):
+    #chunk the data into batches
+    #batchsize= 4
+    #there block_size = 8, context vector, the lnegth of rthe sequence to predict
+    key = jnp.random.PRNGKey(0)
+    indices = jnp.random.randint(key, (batch_size, ), 0, len(data) - block_size)
+    x = jnp.stack([data[idx:idx + block_size] for idx in indices])
+    y = jnp.stack([data[idx + 1:idx + block_size + 1] for idx in indices])
+    return x, y
+
+
+if __name__ == "__main__":
+    #first take in the data
+    f = open("input.txt")
+    chars = sorted(list(set(f.read())))
+    f.seek(0)
+    char_to_idx = {ch:i for i, ch in enumerate(chars)}
+    idx_to_char = {i:ch for i, ch in enumerate(chars)} # encoder and decoder mappings, 
+
+    #lets get the data:
+    data = f.read()
+    data = jnp.ndarray(encode(data))
+
+    #spl9it data into train and test
+    train_data, test_data = data[:int(0.8 * len(data))], data[int(0.8 * len(data)):]
+
+    train_x, train_y = data_loader(train_data)
