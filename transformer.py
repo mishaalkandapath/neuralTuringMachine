@@ -248,7 +248,7 @@ def transformer_forward_encoder(X, encoder_params, num_layers=6):
 
     return prev_out
 
-def forward_pass_decoder(decoder_params, dmodel=512, max_tokens=512, num_layers=6):
+def forward_pass_decoder(decoder_params, encoder_out, dmodel=512, max_tokens=512, num_layers=6):
     # would it be possible to have the decoder be tuned per output, yea it doesnt make a difference hmm
     #unpack params
     dec_WQ, dec_WK, dec_WV, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_G3, dec_b3, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_enc_WQ, dec_enc_WK, dec_enc_WV, dec_enc_persp_WQ, dec_enc_persp_WK, dec_enc_persp_WV, dec_persp_WO, dec_enc_persp_WO = decoder_params
@@ -257,11 +257,18 @@ def forward_pass_decoder(decoder_params, dmodel=512, max_tokens=512, num_layers=
     prev_out = [None] + [-jnp.inf] * (max_tokens - 1) # replace None with the start token 
     prev_out = jnp.ndarray(prev_out)
     for i in range(num_layers):
-        prev_out = decoder(prev_out, dec_WQ[i], dec_WK[i], dec_WV[i],
+        prev_out = decoder(prev_out, encoder_out, dec_WQ[i], dec_WK[i], dec_WV[i],
                            dec_enc_WQ[i], dec_enc_WK[i], dec_enc_WV[i],
                            dec_persp_WQ[i], dec_persp_WK[i], dec_persp_WV[i], dec_persp_WO[i],
                            dec_enc_persp_WQ[i], dec_enc_persp_WK[i], dec_enc_persp_WV[i], dec_enc_persp_WO[i],
                            dec_G1[i], dec_b1[i], dec_G2[i], dec_b2[i], dec_G3[i], dec_b3[i],
                            dec_W_ff1[i], dec_W_ff2[i], dec_b_ff1[i], dec_b_ff2[i])
         
+    #add linear and softmax
     return prev_out
+
+def transformer_train(X, Y, encoder_params, decoder_params, num_layers=6):
+    
+
+def routine_start():
+    pass
