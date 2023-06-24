@@ -237,14 +237,14 @@ def transformer_init(max_tokens=512, num_layers=6, num_heads=8, dmodel=512, dff=
 
 def transformer_forward_encoder(X, encoder_params, num_layers=6):
     #unpack params
-    enc_WQ, enc_WK, enc_WV, enc_persp_WQ, enc_persp_WK, enc_persp_WV, enc_G1, enc_b1, enc_G2, enc_b2, enc_G3, enc_b3, enc_W_ff1, enc_W_ff2, enc_b_ff1, enc_b_ff2, enc_persp_WO = encoder_params
+    enc_WQ, enc_WK, enc_WV, enc_persp_WQ, enc_persp_WK, enc_persp_WV, enc_G1, enc_b1, enc_G2, enc_b2, enc_W_ff1, enc_W_ff2, enc_b_ff1, enc_b_ff2, enc_persp_WO = encoder_params
 
     #pass input through the encoders:
     prev_out = X # we start with the input as the one to feed into 
     for i in range(num_layers):
         prev_out = encoder(prev_out, enc_WQ[i], enc_WK[i], enc_WV[i], 
                            enc_persp_WQ[i], enc_persp_WK[i], enc_persp_WV[i], enc_persp_WO[i], 
-                           enc_G1[i], enc_b1[i], enc_G2[i], enc_b2[i], enc_G3[i], enc_b3[i],
+                           enc_G1[i], enc_b1[i], enc_G2[i], enc_b2[i],
                             enc_W_ff1[i], enc_W_ff2[i], enc_b_ff1[i], enc_b_ff2[i])
     #pass final output through the decoders:
     # oo think about a heirarchial transformer - where your predicting outputs by category level - what kind of sentence - what kind of word then - what is the word? etc
@@ -274,26 +274,6 @@ def transformer_train(X, Y, encoder_params, decoder_params, num_layers=6):
     pass
 
 def routine_start():
-    pass
-
-def encode(text):
-    return [char_to_idx[ch] for ch in text]
-
-def decode(arr):
-    return "".join([idx_to_char[i] for i in arr])
-
-def data_loader(data, batch_size=4, block_size=8):
-    #chunk the data into batches
-    #batchsize= 4
-    #there block_size = 8, context vector, the lnegth of rthe sequence to predict
-    key = jnp.random.PRNGKey(0)
-    indices = jnp.random.randint(key, (batch_size, ), 0, len(data) - block_size)
-    x = jnp.stack([data[idx:idx + block_size] for idx in indices])
-    y = jnp.stack([data[idx + 1:idx + block_size + 1] for idx in indices])
-    return x, y
-
-
-if __name__ == "__main__":
     #first take in the data
     f = open("input.txt")
     chars = sorted(list(set(f.read())))
@@ -310,5 +290,92 @@ if __name__ == "__main__":
 
     train_x, train_y = data_loader(train_data)
     test_x, test_y = data_loader(test_data)
+
+    #time for training. 
+    #init params
+    key = jnp.random.PRNGKey(0)
+
+
+def encode(text):
+    return [char_to_idx[ch] for ch in text]
+
+def decode(arr):
+    return "".join([idx_to_char[i] for i in arr])
+
+def init_encoder_params(batch_size=4, block_size=8, num_layers=6, num_heads=4):
+    key = jnp.random.PRNGKey(0)
+    
+    Wq = jnp.ndarray((block_size, block_size, num_layers))
+    Wk = jnp.ndarray((block_size, block_size, num_layers))
+    Wv = jnp.ndarray((block_size, block_size, num_layers))
+
+    persp_Wq = jnp.ndarray((block_size, num_heads, num_layers))
+    persp_Wk = jnp.ndarray((block_size, num_heads, num_layers))
+    persp_Wv = jnp.ndarray((block_size, num_heads, num_layers))
+    
+    G1 = jnp.ndarray((block_size, block_size, num_layers))
+    b1 = jnp.ndarray((block_size, 1, num_layers))
+    G2 = jnp.ndarray((block_size, block_size, num_layers))
+    b2 = jnp.ndarray((block_size, 1, num_layers))
+
+    W_ff1 = jnp.ndarray((block_size, block_size * 4, num_layers))
+    W_ff2 = jnp.ndarray((block_size * 4, block_size, num_layers))
+    b_ff1 = jnp.ndarray((block_size * 4, 1, num_layers))
+    b_ff2 = jnp.ndarray((block_size, 1, num_layers))
+
+    persp_Wo = jnp.ndarray((block_size, block_size, num_layers)) #note, this is because of the choice of dv = dmodel/h, due to which h * dv = dmodel 
+
+    return Wq, Wk, Wv, persp_Wq, persp_Wk, persp_Wv, G1, b1, G2, b2, W_ff1, W_ff2, b_ff1, b_ff2, persp_Wo
+
+def init_decoder_params(batch_size=4, block_size=8, num_layers=6, num_heads=4):
+    key = jnp.random.PRNGKey(0)
+
+    Wq = jnp.ndarray((block_size, block_size, num_layers))
+    Wk = jnp.ndarray((block_size, block_size, num_layers))
+    Wv = jnp.ndarray((block_size, block_size, num_layers))
+
+    persp_Wq = jnp.ndarray((block_size, num_heads, num_layers))
+    persp_Wk = jnp.ndarray((block_size, num_heads, num_layers))
+    persp_Wv = jnp.ndarray((block_size, num_heads, num_layers))
+
+    G1 = jnp.ndarray((block_size, block_size, num_layers))
+    b1 = jnp.ndarray((block_size, 1, num_layers))
+    G2 = jnp.ndarray((block_size, block_size, num_layers))
+    b2 = jnp.ndarray((block_size, 1, num_layers))
+    G3 = jnp.ndarray((block_size, block_size, num_layers))
+    b3 = jnp.ndarray((block_size, 1, num_layers))
+
+    W_ff1 = jnp.ndarray((block_size, block_size * 4, num_layers))
+    W_ff2 = jnp.ndarray((block_size * 4, block_size, num_layers))
+    b_ff1 = jnp.ndarray((block_size * 4, 1, num_layers))
+    b_ff2 = jnp.ndarray((block_size, 1, num_layers))
+
+    dec_Wq = jnp.ndarray((block_size, block_size, num_layers))
+    enc_Wk = jnp.ndarray((block_size, block_size, num_layers))
+    enc_Wv = jnp.ndarray((block_size, block_size, num_layers))
+
+    dec_persp_Wq = jnp.ndarray((block_size, num_heads, num_layers))
+    enc_persp_Wk = jnp.ndarray((block_size, num_heads, num_layers))
+    enc_persp_Wv = jnp.ndarray((block_size, num_heads, num_layers))
+
+    persp_WO = jnp.ndarray((block_size, block_size, num_layers))
+    dec_persp_WO = jnp.ndarray((block_size, block_size, num_layers))
+
+    return Wq, Wk, Wv, persp_Wq, persp_Wk, persp_Wv, G1, b1, G2, b2, G3, b3, W_ff1, W_ff2, b_ff1, b_ff2, dec_Wq, enc_Wk, enc_Wv, dec_persp_Wq, enc_persp_Wk, enc_persp_Wv, persp_WO, dec_persp_WO
+
+
+def data_loader(data, batch_size=4, block_size=8):
+    #chunk the data into batches
+    #batchsize= 4
+    #there block_size = 8, context vector, the lnegth of rthe sequence to predict
+    key = jnp.random.PRNGKey(0)
+    indices = jnp.random.randint(key, (batch_size, ), 0, len(data) - block_size)
+    x = jnp.stack([data[idx:idx + block_size] for idx in indices])
+    y = jnp.stack([data[idx + 1:idx + block_size + 1] for idx in indices])
+    return x, y
+
+
+if __name__ == "__main__":
+    pass
 
     
