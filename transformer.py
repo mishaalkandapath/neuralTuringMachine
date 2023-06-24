@@ -303,7 +303,8 @@ def decode(arr):
     return "".join([idx_to_char[i] for i in arr])
 
 def init_encoder_params(batch_size=4, block_size=8, num_layers=6, num_heads=4):
-    key = jnp.random.PRNGKey(0)
+    key = jax.random.PRNGKey(0)
+    key, splits = jax.random.split(key, 15)
     
     Wq = jnp.ndarray((block_size, block_size, num_layers))
     Wk = jnp.ndarray((block_size, block_size, num_layers))
@@ -325,10 +326,15 @@ def init_encoder_params(batch_size=4, block_size=8, num_layers=6, num_heads=4):
 
     persp_Wo = jnp.ndarray((block_size, block_size, num_layers)) #note, this is because of the choice of dv = dmodel/h, due to which h * dv = dmodel 
 
-    return Wq, Wk, Wv, persp_Wq, persp_Wk, persp_Wv, G1, b1, G2, b2, W_ff1, W_ff2, b_ff1, b_ff2, persp_Wo
+    weights = [Wq, Wk, Wv, persp_Wq, persp_Wk, persp_Wv, G1, b1, G2, b2, W_ff1, W_ff2, b_ff1, b_ff2, persp_Wo]
+    for idx in range(len(weights)):
+        weights[idx] = jax.random.normal(splits[idx], weights.shape)
+    
+    return tuple(weights)
 
 def init_decoder_params(batch_size=4, block_size=8, num_layers=6, num_heads=4):
-    key = jnp.random.PRNGKey(0)
+    key = jax.random.PRNGKey(0)
+    key, splits = jax.random.split(key, 24)
 
     Wq = jnp.ndarray((block_size, block_size, num_layers))
     Wk = jnp.ndarray((block_size, block_size, num_layers))
@@ -361,7 +367,12 @@ def init_decoder_params(batch_size=4, block_size=8, num_layers=6, num_heads=4):
     persp_WO = jnp.ndarray((block_size, block_size, num_layers))
     dec_persp_WO = jnp.ndarray((block_size, block_size, num_layers))
 
-    return Wq, Wk, Wv, persp_Wq, persp_Wk, persp_Wv, G1, b1, G2, b2, G3, b3, W_ff1, W_ff2, b_ff1, b_ff2, dec_Wq, enc_Wk, enc_Wv, dec_persp_Wq, enc_persp_Wk, enc_persp_Wv, persp_WO, dec_persp_WO
+    weights = [Wq, Wk, Wv, persp_Wq, persp_Wk, persp_Wv, G1, b1, G2, b2, G3, b3, W_ff1, W_ff2, b_ff1, b_ff2, dec_Wq, enc_Wk, enc_Wv, dec_persp_Wq, enc_persp_Wk, enc_persp_Wv, persp_WO, dec_persp_WO]
+
+    for idx in range(len(weights)):
+        weights[idx] = jax.random.normal(splits[idx], weights.shape)
+    
+    return tuple(weights)
 
 
 def data_loader(data, batch_size=4, block_size=8):
