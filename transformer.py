@@ -235,9 +235,9 @@ def transformer_init(max_tokens=512, num_layers=6, num_heads=8, dmodel=512, dff=
     #return all these matrices
     return enc_WQ, enc_WK, enc_WV, enc_persp_WQ, enc_persp_WK, enc_persp_WV, enc_G1, enc_b1, enc_G2, enc_b2, enc_G3, enc_b3, enc_W_ff1, enc_W_ff2, enc_b_ff1, enc_b_ff2, dec_WQ, dec_WK, dec_WV, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_G3, dec_b3, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_enc_WQ, dec_enc_WK, dec_enc_WV, dec_enc_persp_WQ, dec_enc_persp_WK, dec_enc_persp_WV, enc_persp_WO, dec_persp_WO, dec_enc_persp_WO
 
-def transformer_forward_encoder(X, encoder_params, num_layers=6):
+def transformer_forward_encoder(X, enc_WQ, enc_WK, enc_WV, enc_persp_WQ, enc_persp_WK, enc_persp_WV, enc_G1, enc_b1, enc_G2, enc_b2, enc_W_ff1, enc_W_ff2, enc_b_ff1, enc_b_ff2, enc_persp_WO, num_layers=6):
     #unpack params
-    enc_WQ, enc_WK, enc_WV, enc_persp_WQ, enc_persp_WK, enc_persp_WV, enc_G1, enc_b1, enc_G2, enc_b2, enc_W_ff1, enc_W_ff2, enc_b_ff1, enc_b_ff2, enc_persp_WO = encoder_params
+    # enc_WQ, enc_WK, enc_WV, enc_persp_WQ, enc_persp_WK, enc_persp_WV, enc_G1, enc_b1, enc_G2, enc_b2, enc_W_ff1, enc_W_ff2, enc_b_ff1, enc_b_ff2, enc_persp_WO = encoder_params
 
     #pass input through the encoders:
     prev_out = X # we start with the input as the one to feed into 
@@ -251,29 +251,68 @@ def transformer_forward_encoder(X, encoder_params, num_layers=6):
 
     return prev_out
 
-def forward_pass_decoder(decoder_params, encoder_out, dmodel=512, max_tokens=512, num_layers=6):
+def forward_pass_decoder(prev_out, dec_WQ, dec_WK, dec_WV, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_G3, dec_b3, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_enc_WQ, dec_enc_WK, dec_enc_WV, dec_enc_persp_WQ, dec_enc_persp_WK, dec_enc_persp_WV, dec_persp_WO, dec_enc_persp_WO, encoder_out, dmodel=512, max_tokens=512, num_layers=6):
     # would it be possible to have the decoder be tuned per output, yea it doesnt make a difference hmm
     #unpack params
-    dec_WQ, dec_WK, dec_WV, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_G3, dec_b3, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_enc_WQ, dec_enc_WK, dec_enc_WV, dec_enc_persp_WQ, dec_enc_persp_WK, dec_enc_persp_WV, dec_persp_WO, dec_enc_persp_WO = decoder_params
+    # dec_WQ, dec_WK, dec_WV, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_G3, dec_b3, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_enc_WQ, dec_enc_WK, dec_enc_WV, dec_enc_persp_WQ, dec_enc_persp_WK, dec_enc_persp_WV, dec_persp_WO, dec_enc_persp_WO = decoder_params
 
-    #pass input through the encoders:
-    prev_out = [None] + [-jnp.inf] * (max_tokens - 1) # replace None with the start token 
-    prev_out = jnp.ndarray(prev_out)
     for i in range(num_layers):
         prev_out = decoder(prev_out, encoder_out, dec_WQ[i], dec_WK[i], dec_WV[i],
-                           dec_enc_WQ[i], dec_enc_WK[i], dec_enc_WV[i],
-                           dec_persp_WQ[i], dec_persp_WK[i], dec_persp_WV[i], dec_persp_WO[i],
-                           dec_enc_persp_WQ[i], dec_enc_persp_WK[i], dec_enc_persp_WV[i], dec_enc_persp_WO[i],
-                           dec_G1[i], dec_b1[i], dec_G2[i], dec_b2[i], dec_G3[i], dec_b3[i],
-                           dec_W_ff1[i], dec_W_ff2[i], dec_b_ff1[i], dec_b_ff2[i])
+                        dec_enc_WQ[i], dec_enc_WK[i], dec_enc_WV[i],
+                        dec_persp_WQ[i], dec_persp_WK[i], dec_persp_WV[i], dec_persp_WO[i],
+                        dec_enc_persp_WQ[i], dec_enc_persp_WK[i], dec_enc_persp_WV[i], dec_enc_persp_WO[i],
+                        dec_G1[i], dec_b1[i], dec_G2[i], dec_b2[i], dec_G3[i], dec_b3[i],
+                        dec_W_ff1[i], dec_W_ff2[i], dec_b_ff1[i], dec_b_ff2[i])
         
     #add linear and softmax
     return prev_out
 
-def transformer_train(X, Y, encoder_params, decoder_params, num_layers=6):
-    pass
+@jit
+def adam(grad, weight, beta1 = 0.9, beta2 = 0.99, m=0,v=0,t=0, lr=0.001):
+    m = beta1 * m + (1 - beta1) * grad
+    v = beta2 * v + (1 - beta2) * grad ** 2
+    mhat = m / (1 - beta1 ** (t + 1))
+    vhat = v / (1 - beta2 ** (t + 1))
+    weight = weight - lr * mhat / (jnp.sqrt(vhat) + 1e-8)
+    return weight, m, v
 
-def routine_start():
+
+def transformer_train(X, Y, encoder_params, decoder_params, final_linear, iters, num_layers=6, max_tokens=32):
+    #here am resolving to compute loss at the end of sequence generation for now. 
+
+    @jit
+    def forward_loss(X, Y, prev_out,encoder_params, decoder_params, final_linear, num_layers):
+        #pass a forward pass
+        encoder_out = transformer_forward_encoder(X, encoder_params, num_layers)
+        decoder_out = forward_pass_decoder(prev_out, decoder_params, encoder_out, num_layers)
+        out = jnp.nn.functions.softmax(decoder_out @ final_linear)
+        #compute loss
+        loss = jnp.sum(jnp.log(out) * Y)
+        return loss, decoder_out
+
+    argnums = [3 + i for i in range(len(encoder_params))] + [3 + len(encoder_params) + i for i in range(len(decoder_params))] + [3 + len(encoder_params) + len(decoder_params)]
+    
+    for _ in range(iters):
+        #pass a forward pass, and ADAM it
+        enc_WQ, enc_WK, enc_WV, enc_persp_WQ, enc_persp_WK, enc_persp_WV, enc_G1, enc_b1, enc_G2, enc_b2, enc_W_ff1, enc_W_ff2, enc_b_ff1, enc_b_ff2, enc_persp_WO = encoder_params
+        dec_WQ, dec_WK, dec_WV, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_G3, dec_b3, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_enc_WQ, dec_enc_WK, dec_enc_WV, dec_enc_persp_WQ, dec_enc_persp_WK, dec_enc_persp_WV, dec_persp_WO, dec_enc_persp_WO = decoder_params
+        #pass input through the encoders:
+        prev_out = [None] + [-jnp.inf] * (max_tokens - 1) # replace None with the start token 
+        prev_out = jnp.ndarray(prev_out)
+        for j in range(max_tokens):
+            loss, decoder_out, grads = jax.value_and_grad(forward_loss, argnums=argnums)(X, Y[:, j], prev_out,
+                                                        enc_WQ, enc_WK, enc_WV, enc_persp_WQ, enc_persp_WK, enc_persp_WV, enc_G1, enc_b1, enc_G2, enc_b2, enc_W_ff1, enc_W_ff2, enc_b_ff1, enc_b_ff2, enc_persp_WO, 
+                                                        dec_WQ, dec_WK, dec_WV, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_G3, dec_b3, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, 
+                                                        dec_enc_WQ, dec_enc_WK, dec_enc_WV, dec_enc_persp_WQ, dec_enc_persp_WK, dec_enc_persp_WV, dec_persp_WO, dec_enc_persp_WO, 
+                                                        final_linear, num_layers)
+            
+            #update the params using ADAM
+            encoder_params = [adam(grads[i], encoder_params[i]) for i in range(len(encoder_params))]
+            decoder_params = [adam(grads[i + len(encoder_params)], decoder_params[i]) for i in range(len(decoder_params))]
+            final_linear = adam(grads[-1], final_linear)        
+            prev_out[j] = decoder_out
+
+def routine_start(batch_size=4, block_size=8):
     #first take in the data
     f = open("input.txt")
     chars = sorted(list(set(f.read())))
@@ -293,8 +332,10 @@ def routine_start():
 
     #time for training. 
     #init params
-    key = jnp.random.PRNGKey(0)
-
+    key = jax.random.PRNGKey(0)
+    encoder_params = init_encoder_params()
+    decoder_params = init_decoder_params()
+    final_linear_trans = jax.random.normal(key, (batch_size, len(char_to_idx.keys())))
 
 def encode(text):
     return [char_to_idx[ch] for ch in text]
