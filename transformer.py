@@ -35,17 +35,19 @@ from jax import grad, jit, vmap, pmap
 
 char_to_idx = {}
 idx_to_char = {}
+key = jax.random.PRNGKey(0) #central randomness key
 
 @jit
-def scaled_dot_attention(queries, keys, values):
+def scaled_dot_attention(queries, keys, values, time_step=32):
     # the scaling factor is to protect softmax from exploding, giving us trashy gradients. 
     # so we scale by dimension as magnitudes prop. dimension?
     #queries are the outputs from the decoder, keys and values are from the encoder. 
-    
-    compatibilities = jnp.softmax(jnp.matmul(queries, keys.T)/jnp.sqrt(queries.shape[-1]))
+    vals = jnp.matmul(queries, keys.T)
+    vals[:, time_step:] = -jnp.inf
+    compatibilities = jnp.softmax(vals/jnp.sqrt(queries.shape[-1]))
     return compatibilities @ values 
 @jit 
-def multihead_attention(queries, keys, values, weights_q, weights_k, weights_v, weight_o, num_heads=8):
+def multihead_attention(queries, keys, values, weights_q, weights_k, weights_v, weight_o, num_heads=4, time_step=32):
     # the queries and keys are of dimension dmodel (the embedding dimension)
     # weights_q, k, and v are 3 dimensional matrices of dimension num_heads x dmodel x dk (dv)
     #weight_o is of size num_heads*dv x dmodel, and converts the concatenated outputs of the heads into the dmodel dimension - a linear transformation
@@ -54,7 +56,7 @@ def multihead_attention(queries, keys, values, weights_q, weights_k, weights_v, 
     batched_queries = queries @ weights_q # vectorize over the heads dimensions
     batched_keys = keys @ weights_k
     batched_values = values @ weights_v
-    batched_attention = batched_scaled_dot_attention(batched_queries, batched_keys, batched_values)
+    batched_attention = batched_scaled_dot_attention(batched_queries, batched_keys, batched_values, time_step=time_step) # mm does htis have to be batched?
     return batched_attention.reshape((num_heads*64, 512)) @ weight_o #dv, dk, dmodel/h = 64
                                      
 @jit
@@ -113,7 +115,7 @@ def encoder(I, Wq, Wk, Wv,
 def decoder(I, enc_out, Wq, Wk, Wv, W_dec_q, W_enc_k, W_enc_v, 
             persp_Wq, persp_Wk, persp_Wv, persp_Wo, persp_dec_Wq, persp_enc_Wk, persp_enc_Wv, persp_dec_Wo, 
             G1, b1, G2, b2, G3, b3, 
-            W_ff1, W_ff2, b_ff1, b_ff2):
+            W_ff1, W_ff2, b_ff1, b_ff2, time_step):
     """
     @param I: the input matrix of output tokens, each row is a token embedding
     @param enc_out: the output of the encoder, of dimension num_tokens x dmodel
@@ -140,7 +142,7 @@ def decoder(I, enc_out, Wq, Wk, Wv, W_dec_q, W_enc_k, W_enc_v,
     # lol i wonder what happens if i do attention over decoder outputs instead of on encoder ouputs
     # i know there is repeated code, I will rearrange in a while 
     Queries, Keys, Values = I @ Wq, I @ Wk, I @ Wv #where I is the matrix of input tokens
-    O = multihead_attention(Queries, Keys, Values, persp_Wq, persp_Wk, persp_Wv, persp_Wo) + I
+    O = multihead_attention(Queries, Keys, Values, persp_Wq, persp_Wk, persp_Wv, persp_Wo, time_step=time_step) + I
     #layer norm 
     O = layer_norm(O, G1, b1)
 
@@ -156,12 +158,12 @@ def decoder(I, enc_out, Wq, Wk, Wv, W_dec_q, W_enc_k, W_enc_v,
 
     return O
 
-def transformer_init(max_tokens=512, num_layers=6, num_heads=8, dmodel=512, dff=2048, dk=64, dv=64):
+def transformer_init(max_tokens=32, num_layers=4, num_heads=4, dmodel=32, dff=64, dk=4, dv=4):
     #returns all the matrices needed for the transformer with the mentioned number of layers and everything 
     #note: the positional encodings and the embedding is not included here
     #the encoder matrices first:
-    rand_key = jax.random.PRNGKey(0)
-    rand_key, split1 = jax.random.split(rand_key)
+    global key
+    rand_key, split1 = jax.random.split(key)
     rand_key, split2 = jax.random.split(rand_key)
     rand_key, split3 = jax.random.split(rand_key)
     enc_WQ, enc_WK, enc_WV = jax.random.normal(split1, (max_tokens, dmodel, num_layers)), jax.random.normal(split2, (max_tokens, dmodel, num_layers)), jax.random.normal(split3, (max_tokens, dmodel, num_layers))
@@ -251,7 +253,7 @@ def transformer_forward_encoder(X, enc_WQ, enc_WK, enc_WV, enc_persp_WQ, enc_per
 
     return prev_out
 
-def forward_pass_decoder(prev_out, dec_WQ, dec_WK, dec_WV, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_G3, dec_b3, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_enc_WQ, dec_enc_WK, dec_enc_WV, dec_enc_persp_WQ, dec_enc_persp_WK, dec_enc_persp_WV, dec_persp_WO, dec_enc_persp_WO, encoder_out, dmodel=512, max_tokens=512, num_layers=6):
+def forward_pass_decoder(prev_out, dec_WQ, dec_WK, dec_WV, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_G3, dec_b3, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_enc_WQ, dec_enc_WK, dec_enc_WV, dec_enc_persp_WQ, dec_enc_persp_WK, dec_enc_persp_WV, dec_persp_WO, dec_enc_persp_WO, encoder_out, dmodel=32, max_tokens=32, num_layers=4):
     # would it be possible to have the decoder be tuned per output, yea it doesnt make a difference hmm
     #unpack params
     # dec_WQ, dec_WK, dec_WV, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_G3, dec_b3, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_enc_WQ, dec_enc_WK, dec_enc_WV, dec_enc_persp_WQ, dec_enc_persp_WK, dec_enc_persp_WV, dec_persp_WO, dec_enc_persp_WO = decoder_params
@@ -262,7 +264,7 @@ def forward_pass_decoder(prev_out, dec_WQ, dec_WK, dec_WV, dec_persp_WQ, dec_per
                         dec_persp_WQ[i], dec_persp_WK[i], dec_persp_WV[i], dec_persp_WO[i],
                         dec_enc_persp_WQ[i], dec_enc_persp_WK[i], dec_enc_persp_WV[i], dec_enc_persp_WO[i],
                         dec_G1[i], dec_b1[i], dec_G2[i], dec_b2[i], dec_G3[i], dec_b3[i],
-                        dec_W_ff1[i], dec_W_ff2[i], dec_b_ff1[i], dec_b_ff2[i])
+                        dec_W_ff1[i], dec_W_ff2[i], dec_b_ff1[i], dec_b_ff2[i], i)
         
     #add linear and softmax
     return prev_out
@@ -277,11 +279,11 @@ def adam(grad, weight, beta1 = 0.9, beta2 = 0.99, m=0,v=0,t=0, lr=0.001):
     return weight, m, v
 
 
-def transformer_train(X, Y, encoder_params, decoder_params, final_linear, iters, num_layers=6, max_tokens=32):
+def transformer_train(X, Y, encoder_params, decoder_params, final_linear, iters, num_layers=4, max_tokens=32):
     #here am resolving to compute loss at the end of sequence generation for now. 
 
     @jit
-    def forward_loss(X, Y, prev_out,encoder_params, decoder_params, final_linear, num_layers):
+    def forward_loss(X, Y, prev_out,encoder_params, decoder_params, final_linear, num_layers=4):
         #pass a forward pass
         encoder_out = transformer_forward_encoder(X, encoder_params, num_layers)
         decoder_out = forward_pass_decoder(prev_out, decoder_params, encoder_out, num_layers)
@@ -312,7 +314,7 @@ def transformer_train(X, Y, encoder_params, decoder_params, final_linear, iters,
             final_linear = adam(grads[-1], final_linear)        
             prev_out[j] = decoder_out
 
-def routine_start(batch_size=4, block_size=8):
+def routine_start(batch_size=16, block_size=32):
     #first take in the data
     f = open("input.txt")
     chars = sorted(list(set(f.read())))
@@ -332,7 +334,6 @@ def routine_start(batch_size=4, block_size=8):
 
     #time for training. 
     #init params
-    key = jax.random.PRNGKey(0)
     encoder_params = init_encoder_params()
     decoder_params = init_decoder_params()
     final_linear_trans = jax.random.normal(key, (batch_size, len(char_to_idx.keys())))
@@ -343,17 +344,17 @@ def encode(text):
 def decode(arr):
     return "".join([idx_to_char[i] for i in arr])
 
-def init_encoder_params(batch_size=4, block_size=8, num_layers=6, num_heads=4):
-    key = jax.random.PRNGKey(0)
+def init_encoder_params(batch_size=16, block_size=32, num_layers=4, num_heads=4, dk=4, dv=4):
+    global key
     key, splits = jax.random.split(key, 15)
     
     Wq = jnp.ndarray((block_size, block_size, num_layers))
     Wk = jnp.ndarray((block_size, block_size, num_layers))
     Wv = jnp.ndarray((block_size, block_size, num_layers))
 
-    persp_Wq = jnp.ndarray((block_size, num_heads, num_layers))
-    persp_Wk = jnp.ndarray((block_size, num_heads, num_layers))
-    persp_Wv = jnp.ndarray((block_size, num_heads, num_layers))
+    persp_Wq = jnp.ndarray((block_size, dk, num_heads, num_layers))
+    persp_Wk = jnp.ndarray((block_size, dk, num_heads, num_layers))
+    persp_Wv = jnp.ndarray((block_size, dv, num_heads, num_layers))
     
     G1 = jnp.ndarray((block_size, block_size, num_layers))
     b1 = jnp.ndarray((block_size, 1, num_layers))
@@ -373,17 +374,17 @@ def init_encoder_params(batch_size=4, block_size=8, num_layers=6, num_heads=4):
     
     return tuple(weights)
 
-def init_decoder_params(batch_size=4, block_size=8, num_layers=6, num_heads=4):
-    key = jax.random.PRNGKey(0)
+def init_decoder_params(batch_size=16, block_size=32, num_layers=4, num_heads=4, dk=4, dv=4):
+    global key
     key, splits = jax.random.split(key, 24)
 
     Wq = jnp.ndarray((block_size, block_size, num_layers))
     Wk = jnp.ndarray((block_size, block_size, num_layers))
     Wv = jnp.ndarray((block_size, block_size, num_layers))
 
-    persp_Wq = jnp.ndarray((block_size, num_heads, num_layers))
-    persp_Wk = jnp.ndarray((block_size, num_heads, num_layers))
-    persp_Wv = jnp.ndarray((block_size, num_heads, num_layers))
+    persp_Wq = jnp.ndarray((block_size, dk, num_heads, num_layers))
+    persp_Wk = jnp.ndarray((block_size, dk, num_heads, num_layers))
+    persp_Wv = jnp.ndarray((block_size, dv, num_heads, num_layers))
 
     G1 = jnp.ndarray((block_size, block_size, num_layers))
     b1 = jnp.ndarray((block_size, 1, num_layers))
@@ -401,9 +402,9 @@ def init_decoder_params(batch_size=4, block_size=8, num_layers=6, num_heads=4):
     enc_Wk = jnp.ndarray((block_size, block_size, num_layers))
     enc_Wv = jnp.ndarray((block_size, block_size, num_layers))
 
-    dec_persp_Wq = jnp.ndarray((block_size, num_heads, num_layers))
-    enc_persp_Wk = jnp.ndarray((block_size, num_heads, num_layers))
-    enc_persp_Wv = jnp.ndarray((block_size, num_heads, num_layers))
+    dec_persp_Wq = jnp.ndarray((block_size, dk, num_heads, num_layers))
+    enc_persp_Wk = jnp.ndarray((block_size, dk, num_heads, num_layers))
+    enc_persp_Wv = jnp.ndarray((block_size, dv, num_heads, num_layers))
 
     persp_WO = jnp.ndarray((block_size, block_size, num_layers))
     dec_persp_WO = jnp.ndarray((block_size, block_size, num_layers))
@@ -416,15 +417,20 @@ def init_decoder_params(batch_size=4, block_size=8, num_layers=6, num_heads=4):
     return tuple(weights)
 
 
-def data_loader(data, batch_size=4, block_size=8):
+def data_loader(data, batch_size=16, block_size=32):
     #chunk the data into batches
     #batchsize= 4
     #there block_size = 8, context vector, the lnegth of rthe sequence to predict
-    key = jnp.random.PRNGKey(0)
-    indices = jnp.random.randint(key, (batch_size, ), 0, len(data) - block_size)
+    global key
+    indices = jax.random.randint(key, (batch_size, ), 0, len(data) - block_size)
     x = jnp.stack([data[idx:idx + block_size] for idx in indices])
     y = jnp.stack([data[idx + 1:idx + block_size + 1] for idx in indices])
     return x, y
+
+"""
+positional encodings
+mask the decoder properly
+"""
 
 
 if __name__ == "__main__":
