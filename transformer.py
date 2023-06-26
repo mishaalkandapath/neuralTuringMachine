@@ -338,8 +338,15 @@ def routine_start(batch_size=16, block_size=32):
     decoder_params = init_decoder_params()
     final_linear_trans = jax.random.normal(key, (batch_size, len(char_to_idx.keys())))
 
+    transformer_train(train_x, train_y, encoder_params, decoder_params, final_linear_trans, 1000)
+
 def encode(text):
     return [char_to_idx[ch] for ch in text]
+
+# def encode_with_positional(text): #not neccessary for this dumb d=1 data. 
+#     #applying the same positional encoding as in paper
+#     init_embed = encode(text)
+#     pos_encod = jnp.sin(jnp.arange(len(init_embed)) / (10000 ** (2 */ len(init_embed)) for i in range(len(init_embed)))
 
 def decode(arr):
     return "".join([idx_to_char[i] for i in arr])
@@ -426,12 +433,6 @@ def data_loader(data, batch_size=16, block_size=32):
     x = jnp.stack([data[idx:idx + block_size] for idx in indices])
     y = jnp.stack([data[idx + 1:idx + block_size + 1] for idx in indices])
     return x, y
-
-"""
-positional encodings
-mask the decoder properly
-"""
-
 
 if __name__ == "__main__":
     pass
