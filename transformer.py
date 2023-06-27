@@ -2,6 +2,8 @@ import jax
 from jax import numpy as jnp
 from jax import make_jaxpr
 from jax import grad, jit, vmap, pmap
+from functools import partial
+from jax.nn import softmax
 
 # jax numpy is a drop in replacement, meaning you can use almost everything the same way. for example:"
 # jnp.arange(10), instead of np.arange(10); fairly intuitive. 
@@ -37,27 +39,30 @@ char_to_idx = {}
 idx_to_char = {}
 key = jax.random.PRNGKey(0) #central randomness key
 
-@jit
+@partial(jit, static_argnums=(3, ))
 def scaled_dot_attention(queries, keys, values, time_step=32):
     # the scaling factor is to protect softmax from exploding, giving us trashy gradients. 
     # so we scale by dimension as magnitudes prop. dimension?
     #queries are the outputs from the decoder, keys and values are from the encoder. 
+    assert isinstance(time_step, int), "time step must be an integer" 
     vals = jnp.matmul(queries, keys.T)
     vals.at[:, time_step:].set( -jnp.inf)
-    compatibilities = jnp.softmax(vals/jnp.sqrt(queries.shape[-1]))
+    compatibilities = softmax(vals/jnp.sqrt(queries.shape[-1]))
     return compatibilities @ values 
-@jit 
+@partial(jit, static_argnums=(8, ))
 def multihead_attention(queries, keys, values, weights_q, weights_k, weights_v, weight_o, num_heads=4, time_step=32):
     # the queries and keys are of dimension dmodel (the embedding dimension)
     # weights_q, k, and v are 3 dimensional matrices of dimension num_heads x dmodel x dk (dv)
     #weight_o is of size num_heads*dv x dmodel, and converts the concatenated outputs of the heads into the dmodel dimension - a linear transformation
     #not parallelizing, i dont got the hardware for that
-    batched_scaled_dot_attention = vmap(scaled_dot_attention)
+    assert isinstance(time_step, int), "time step must be an integer" 
+    batched_scaled_dot_attention = vmap(scaled_dot_attention, in_axes=(0, 0, 0, None))
     batched_queries = queries @ weights_q # vectorize over the heads dimensions
     batched_keys = keys @ weights_k
     batched_values = values @ weights_v
-    batched_attention = batched_scaled_dot_attention(batched_queries, batched_keys, batched_values, time_step=time_step) # mm does htis have to be batched?
-    return batched_attention.reshape((num_heads*64, 512)) @ weight_o #dv, dk, dmodel/h = 64
+    batched_attention = batched_scaled_dot_attention(batched_queries, batched_keys, batched_values, time_step) # doesnt have to be batched because of in_axes
+    print(weight_o.shape)
+    return batched_attention.reshape((16, 32)) @ weight_o #dv, dk, dmodel/h = 64
                                      
 @jit
 def layer_norm(X, G, b, eps=1e-6):
@@ -111,7 +116,7 @@ def encoder(I, Wq, Wk, Wv,
 
     return O
 
-@jit
+@partial(jit, static_argnums=(26, ))
 def decoder(I, enc_out, Wq, Wk, Wv, W_dec_q, W_enc_k, W_enc_v, 
             persp_Wq, persp_Wk, persp_Wv, persp_Wo, persp_dec_Wq, persp_enc_Wk, persp_enc_Wv, persp_dec_Wo, 
             G1, b1, G2, b2, G3, b3, 
@@ -139,6 +144,7 @@ def decoder(I, enc_out, Wq, Wk, Wv, W_dec_q, W_enc_k, W_enc_v,
 
     the rest are the same, refer encoder.
     """
+    assert isinstance(time_step, int), "time step must be an integer" 
     # lol i wonder what happens if i do attention over decoder outputs instead of on encoder ouputs
     # i know there is repeated code, I will rearrange in a while 
     Queries, Keys, Values = I @ Wq, I @ Wk, I @ Wv #where I is the matrix of input tokens
@@ -243,6 +249,7 @@ def transformer_forward_encoder(X, enc_WQ, enc_WK, enc_WV, enc_persp_WQ, enc_per
 
     #pass input through the encoders:
     prev_out = X # we start with the input as the one to feed into 
+    assert type(num_layers) is int, "num_layers must be an integer"
     for i in range(num_layers):
         prev_out = encoder(prev_out, enc_WQ[i], enc_WK[i], enc_WV[i], 
                            enc_persp_WQ[i], enc_persp_WK[i], enc_persp_WV[i], enc_persp_WO[i], 
@@ -257,7 +264,7 @@ def forward_pass_decoder(prev_out, dec_WQ, dec_WK, dec_WV, dec_persp_WQ, dec_per
     # would it be possible to have the decoder be tuned per output, yea it doesnt make a difference hmm
     #unpack params
     # dec_WQ, dec_WK, dec_WV, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_G3, dec_b3, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_enc_WQ, dec_enc_WK, dec_enc_WV, dec_enc_persp_WQ, dec_enc_persp_WK, dec_enc_persp_WV, dec_persp_WO, dec_enc_persp_WO = decoder_params
-
+    assert type(num_layers) is int, "num_layers must be an integer"
     for i in range(num_layers):
         prev_out = decoder(prev_out, encoder_out, dec_WQ[i], dec_WK[i], dec_WV[i],
                         dec_enc_WQ[i], dec_enc_WK[i], dec_enc_WV[i],
@@ -278,22 +285,28 @@ def adam(grad, weight, beta1 = 0.9, beta2 = 0.99, m=0,v=0,t=0, lr=0.001):
     weight = weight - lr * mhat / (jnp.sqrt(vhat) + 1e-8)
     return weight, m, v
 
+@partial(jit, static_argnums=(43,))
+def forward_loss(X, Y, prev_out, enc_WQ, enc_WK, enc_WV, enc_persp_WQ, enc_persp_WK, enc_persp_WV, enc_G1, enc_b1, enc_G2, enc_b2, enc_W_ff1, enc_W_ff2, enc_b_ff1, enc_b_ff2, enc_persp_WO,
+                dec_WQ, dec_WK, dec_WV, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_G3, dec_b3, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, 
+                dec_enc_WQ, dec_enc_WK, dec_enc_WV, dec_enc_persp_WQ, dec_enc_persp_WK, dec_enc_persp_WV, dec_persp_WO, dec_enc_persp_WO,
+                final_linear, num_layers=4):
+    #pass a forward pass
+    assert type(num_layers) is int, "num_layers must be an integer"
+    encoder_out = transformer_forward_encoder(X, enc_WQ, enc_WK, enc_WV, enc_persp_WQ, enc_persp_WK, enc_persp_WV, enc_G1, enc_b1, enc_G2, enc_b2, enc_W_ff1, enc_W_ff2, enc_b_ff1, enc_b_ff2, enc_persp_WO,
+                                            num_layers)
+    decoder_out = forward_pass_decoder(prev_out, dec_WQ, dec_WK, dec_WV, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_G3, dec_b3, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, 
+                                            dec_enc_WQ, dec_enc_WK, dec_enc_WV, dec_enc_persp_WQ, dec_enc_persp_WK, dec_enc_persp_WV, dec_persp_WO, dec_enc_persp_WO,
+                                            encoder_out, num_layers)
+    out = jnp.nn.functions.softmax(decoder_out @ final_linear)
+    #compute loss
+    loss = jnp.sum(jnp.log(out) * Y)
+    return loss, decoder_out
 
 def transformer_train(X, Y, encoder_params, decoder_params, final_linear, iters, num_layers=4, max_tokens=32):
-    #here am resolving to compute loss at the end of sequence generation for now. 
-
-    @jit
-    def forward_loss(X, Y, prev_out,encoder_params, decoder_params, final_linear, num_layers=4):
-        #pass a forward pass
-        encoder_out = transformer_forward_encoder(X, encoder_params, num_layers)
-        decoder_out = forward_pass_decoder(prev_out, decoder_params, encoder_out, num_layers)
-        out = jnp.nn.functions.softmax(decoder_out @ final_linear)
-        #compute loss
-        loss = jnp.sum(jnp.log(out) * Y)
-        return loss, decoder_out
-
+    #here am resolving to compute loss at the end of sequence generation for now.
+    assert type(num_layers) is int, "num_layers must be an integer"
     argnums = [3 + i for i in range(len(encoder_params))] + [3 + len(encoder_params) + i for i in range(len(decoder_params))] + [3 + len(encoder_params) + len(decoder_params)]
-    
+
     for _ in range(iters):
         #pass a forward pass, and ADAM it
         enc_WQ, enc_WK, enc_WV, enc_persp_WQ, enc_persp_WK, enc_persp_WV, enc_G1, enc_b1, enc_G2, enc_b2, enc_W_ff1, enc_W_ff2, enc_b_ff1, enc_b_ff2, enc_persp_WO = encoder_params
@@ -313,6 +326,7 @@ def transformer_train(X, Y, encoder_params, decoder_params, final_linear, iters,
             decoder_params = [adam(grads[i + len(encoder_params)], decoder_params[i]) for i in range(len(decoder_params))]
             final_linear = adam(grads[-1], final_linear)        
             prev_out[j] = decoder_out
+            
         if _ % 100 == 0:
             print(decode(prev_out))
             print(loss)
@@ -359,7 +373,9 @@ def decode(arr):
 
 def init_encoder_params(batch_size=16, block_size=32, num_layers=4, num_heads=4, dk=4, dv=4):
     global key
-    key, splits = jax.random.split(key, 15)
+    splits = jax.random.split(key, 15)
+    key = splits[0]
+    splits = splits[1:]
     #note, the output persp shape is because of the choice of dv = dmodel/h, due to which h * dv = dmodel 
 
     weights = [(block_size, block_size, num_layers), (block_size, block_size, num_layers), (block_size, block_size, num_layers),
@@ -373,7 +389,9 @@ def init_encoder_params(batch_size=16, block_size=32, num_layers=4, num_heads=4,
 
 def init_decoder_params(batch_size=16, block_size=32, num_layers=4, num_heads=4, dk=4, dv=4):
     global key
-    key, splits = jax.random.split(key, 24)
+    splits = jax.random.split(key, 24)
+    key = splits[0]
+    splits = splits[1:]
 
     weights = [(block_size, block_size, num_layers), (block_size, block_size, num_layers), (block_size, block_size, num_layers),
                 (block_size, dk, num_heads, num_layers), (block_size, dk, num_heads, num_layers), (block_size, dv, num_heads, num_layers),
