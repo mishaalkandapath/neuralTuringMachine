@@ -4,6 +4,7 @@ from jax import make_jaxpr
 from jax import grad, jit, vmap, pmap
 from functools import partial
 from jax.nn import softmax
+import numpy as np
 
 # jax numpy is a drop in replacement, meaning you can use almost everything the same way. for example:"
 # jnp.arange(10), instead of np.arange(10); fairly intuitive. 
@@ -34,10 +35,22 @@ from jax.nn import softmax
 #jax vmap:
 # takes a function, an in_axes parameter that specifies which input axes to map over, and an out_axes parameter that specifies where the mapped axis should appear in the output
 # returns a new function
-
+#some constants
 char_to_idx = {}
 idx_to_char = {}
 key = jax.random.PRNGKey(0) #central randomness key
+
+mode = "generation"
+dmodel = 1 #dimension of the embedding
+dk, dq, dv = 1 # for now, test numbers. 
+num_heads = 2
+num_layers = 3
+block_size = 32
+batch_size = 16
+
+#Remember to write the bit on :
+#  - @partial
+# - self attention masking and that our embeddin is of vectors of size 1
 
 @partial(jit, static_argnums=(3, ))
 def scaled_dot_attention(queries, keys, values, time_step=32):
@@ -307,35 +320,57 @@ def forward_loss(X, Y, prev_out, enc_WQ, enc_WK, enc_WV, enc_persp_WQ, enc_persp
         loss += jnp.sum(jnp.log(out) * Y[:, j])
     return loss, prev_out
 
-def transformer_train(X, Y, encoder_params, decoder_params, final_linear, iters, num_layers=4, max_tokens=32):
-    #here am resolving to compute loss at the end of sequence generation for now.
-    assert type(num_layers) is int, "num_layers must be an integer"
-    argnums = [3 + i for i in range(len(encoder_params))] + [3 + len(encoder_params) + i for i in range(len(decoder_params))] + [3 + len(encoder_params) + len(decoder_params)]
+#this is largely wrong, will be corrected later.
+def transformer_train_translation(X, Y, encoder_params, decoder_params, final_linear, iters):
+    # global num_layers
+    # #here am resolving to compute loss at the end of sequence generation for now.
+    # assert type(num_layers) is int, "num_layers must be an integer"
+    # argnums = [3 + i for i in range(len(encoder_params))] + [3 + len(encoder_params) + i for i in range(len(decoder_params))] + [3 + len(encoder_params) + len(decoder_params)]
 
-    for _ in range(iters):
-        #pass a forward pass, and ADAM it
-        enc_WQ, enc_WK, enc_WV, enc_persp_WQ, enc_persp_WK, enc_persp_WV, enc_G1, enc_b1, enc_G2, enc_b2, enc_W_ff1, enc_W_ff2, enc_b_ff1, enc_b_ff2, enc_persp_WO = encoder_params
-        dec_WQ, dec_WK, dec_WV, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_G3, dec_b3, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_enc_WQ, dec_enc_WK, dec_enc_WV, dec_enc_persp_WQ, dec_enc_persp_WK, dec_enc_persp_WV, dec_persp_WO, dec_enc_persp_WO = decoder_params
-        #pass input through the encoders:
-        prev_out = [-jnp.inf] * (max_tokens) # replace None with the start token 
-        prev_out = jnp.asarray(prev_out)
-        loss, prev_out, grads = jax.value_and_grad(forward_loss, argnums=argnums)(X, Y, prev_out,
-                                                    enc_WQ, enc_WK, enc_WV, enc_persp_WQ, enc_persp_WK, enc_persp_WV, enc_G1, enc_b1, enc_G2, enc_b2, enc_W_ff1, enc_W_ff2, enc_b_ff1, enc_b_ff2, enc_persp_WO, 
-                                                    dec_WQ, dec_WK, dec_WV, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_G3, dec_b3, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, 
-                                                    dec_enc_WQ, dec_enc_WK, dec_enc_WV, dec_enc_persp_WQ, dec_enc_persp_WK, dec_enc_persp_WV, dec_persp_WO, dec_enc_persp_WO, 
-                                                    final_linear, num_layers, max_tokens)
+    # for _ in range(iters):
+    #     #pass a forward pass, and ADAM it
+    #     enc_WQ, enc_WK, enc_WV, enc_persp_WQ, enc_persp_WK, enc_persp_WV, enc_G1, enc_b1, enc_G2, enc_b2, enc_W_ff1, enc_W_ff2, enc_b_ff1, enc_b_ff2, enc_persp_WO = encoder_params
+    #     dec_WQ, dec_WK, dec_WV, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_G3, dec_b3, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_enc_WQ, dec_enc_WK, dec_enc_WV, dec_enc_persp_WQ, dec_enc_persp_WK, dec_enc_persp_WV, dec_persp_WO, dec_enc_persp_WO = decoder_params
+    #     #pass input through the encoders:
+    #     prev_out = [-jnp.inf] * (max_tokens) # replace None with the start token 
+    #     prev_out = jnp.asarray(prev_out)
+    #     loss, prev_out, grads = jax.value_and_grad(forward_loss, argnums=argnums)(X, Y, prev_out,
+    #                                                 enc_WQ, enc_WK, enc_WV, enc_persp_WQ, enc_persp_WK, enc_persp_WV, enc_G1, enc_b1, enc_G2, enc_b2, enc_W_ff1, enc_W_ff2, enc_b_ff1, enc_b_ff2, enc_persp_WO, 
+    #                                                 dec_WQ, dec_WK, dec_WV, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_G3, dec_b3, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, 
+    #                                                 dec_enc_WQ, dec_enc_WK, dec_enc_WV, dec_enc_persp_WQ, dec_enc_persp_WK, dec_enc_persp_WV, dec_persp_WO, dec_enc_persp_WO, 
+    #                                                 final_linear, num_layers, max_tokens)
         
-        #update the params using ADAM
-        encoder_params = [adam(grads[i], encoder_params[i]) for i in range(len(encoder_params))]
-        decoder_params = [adam(grads[i + len(encoder_params)], decoder_params[i]) for i in range(len(decoder_params))]
-        final_linear = adam(grads[-1], final_linear)        
+    #     #update the params using ADAM
+    #     encoder_params = [adam(grads[i], encoder_params[i]) for i in range(len(encoder_params))]
+    #     decoder_params = [adam(grads[i + len(encoder_params)], decoder_params[i]) for i in range(len(decoder_params))]
+    #     final_linear = adam(grads[-1], final_linear)        
             
-        if _ % 100 == 0:
-            print(decode(prev_out))
-            print(loss)
+    #     if _ % 100 == 0:
+    #         print(decode(prev_out))
+    #         print(loss)
+    pass # for now
 
-def routine_start(batch_size=16, block_size=32):
-    global char_to_idx, idx_to_char
+def transformer_train_generation(X, Y, decoder_params, final_linear, iters):
+    global num_layers
+    dec_WQ, dec_WK, dec_WV, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_G3, dec_b3, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_enc_WQ, dec_enc_WK, dec_enc_WV, dec_enc_persp_WQ, dec_enc_persp_WK, dec_enc_persp_WV, dec_persp_WO, dec_enc_persp_WO = decoder_params
+    for _ in range(iters):
+        #prepare the X array, where X here is a matrix of examples only , make them to be one at a time
+        #make a new dimension, the dimension of training examples:
+        if len(X.shape) == 1:
+            X = jnp.expand_dims(X, axis=0)
+            #extract each of the second dimension into the first dimension, and make the second dimension a single element 
+            X = jnp.reshape(X, (X.shape[1], X.shape[2],  1)) 
+        #otherwise can assume it came in the right shape, coz we need to parallelize over the training examples
+        
+        #change this, assuming that there is only one example that is being passed through:
+        X = X[0,:,:]
+        for _ in range(iters):
+            #here the thing is, given our encoding dmodel = 1, thats kinda shet lol
+            pass
+
+def routine_start(mode):
+    global char_to_idx, idx_to_char, batch_size
+    assert mode in ["translation", "generation"], "invalid option, choose among 'translation' and 'generation'"
     #first take in the data
     f = open("input.txt")
     chars = sorted(list(set(f.read())))
@@ -355,11 +390,15 @@ def routine_start(batch_size=16, block_size=32):
 
     #time for training. 
     #init params
-    encoder_params = init_encoder_params()
+    if mode == "translation":
+        encoder_params = init_encoder_params()
     decoder_params = init_decoder_params()
     final_linear_trans = jax.random.normal(key, (batch_size, len(char_to_idx.keys())))
 
-    transformer_train(train_x, train_y, encoder_params, decoder_params, final_linear_trans, 1000)
+    if mode == "translation":
+        transformer_train_translation(train_x, train_y, encoder_params, decoder_params, final_linear_trans, 1000)
+    else:
+        transformer_train_generation(train_x, train_y, decoder_params, final_linear_trans, 1000)
 
 def encode(text):
     global char_to_idx
@@ -374,8 +413,8 @@ def decode(arr):
     global idx_to_char
     return "".join([idx_to_char[i] for i in arr])
 
-def init_encoder_params(batch_size=16, block_size=32, num_layers=4, num_heads=4, dk=4, dv=4):
-    global key
+def init_encoder_params():
+    global key, block_size, num_layers, num_heads, dk, dv
     splits = jax.random.split(key, 15)
     key = splits[0]
     splits = splits[1:]
@@ -391,12 +430,15 @@ def init_encoder_params(batch_size=16, block_size=32, num_layers=4, num_heads=4,
     
     return tuple(weights)
 
-def init_decoder_params(batch_size=16, block_size=32, num_layers=4, num_heads=4, dk=4, dv=4):
-    global key
+def init_decoder_params():
+    global key, block_size, num_layers, num_heads, dk, dv, dq, dmodel
     splits = jax.random.split(key, 24)
     key = splits[0]
     splits = splits[1:]
-
+    # order: Wq, Wk, Wv, persp_Wq, persp_Wk, persp_Wv, 
+    # G1, b1, G2, b2, G3, b3, W_ff1, W_ff2, b_ff1, b_ff2, 
+    # dec_Wq, enc_Wk, enc_Wv, dec_persp_Wq, enc_persp_Wk, 
+    # enc_persp_Wv, persp_WO, dec_persp_WO
     weights = [(block_size, block_size, num_layers), (block_size, block_size, num_layers), (block_size, block_size, num_layers),
                 (num_heads, block_size, dk, num_layers), (num_heads, block_size, dk, num_layers), (num_heads, block_size, dk, num_layers),
                   (batch_size, block_size, num_layers), (1, block_size, num_layers), (batch_size, block_size, num_layers), (1, block_size, num_layers), (batch_size, block_size, num_layers), (1, block_size, num_layers),
@@ -411,7 +453,8 @@ def init_decoder_params(batch_size=16, block_size=32, num_layers=4, num_heads=4,
     return tuple(weights)
 
 
-def data_loader(data, batch_size=16, block_size=32):
+def data_loader(data):
+    global batch_size, block_size
     #chunk the data into batches
     #batchsize= 4
     #there block_size = 8, context vector, the lnegth of rthe sequence to predict
