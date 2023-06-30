@@ -4,8 +4,8 @@ from jax import make_jaxpr
 from jax import grad, jit, vmap, pmap
 from functools import partial
 from jax.nn import softmax
-import numpy as np
-
+import math
+import time
 # jax numpy is a drop in replacement, meaning you can use almost everything the same way. for example:"
 # jnp.arange(10), instead of np.arange(10); fairly intuitive. 
 
@@ -41,8 +41,8 @@ idx_to_char = {}
 key = jax.random.PRNGKey(0) #central randomness key
 
 mode = "generation"
-dmodel = 1 #dimension of the embedding
-dk, dq, dv = 1 # for now, test numbers. 
+dmodel = 65 #dimension of the embedding
+dk, dq, dv = 1,1,1 # for now, test numbers. 
 num_heads = 2
 num_layers = 3
 block_size = 32
@@ -51,30 +51,33 @@ batch_size = 16
 #Remember to write the bit on :
 #  - @partial
 # - self attention masking and that our embeddin is of vectors of size 1
-
-@partial(jit, static_argnums=(3, ))
+@jit
 def scaled_dot_attention(queries, keys, values):
     # the scaling factor is to protect softmax from exploding, giving us trashy gradients. 
     # so we scale by dimension as magnitudes prop. dimension?
     #queries are the outputs from the decoder, keys and values are from the encoder. 
     
     vals = jnp.matmul(queries, keys.T)
-    vals = jnp.where(jnp.tril(vals) == 0, size=vals.shape, fill_value= -jnp.inf) #mask out illegal positions
-    compatibilities = softmax(vals/jnp.sqrt(queries.shape[-1]))
+    vals = jnp.where(jnp.tril(vals) == 0, -jnp.inf, vals) #mask out illegal positions
+    dim_arr = jnp.asarray([queries.shape[-1]])
+    vals = vals/(jnp.sqrt(dim_arr)[0])
+   
+    compatibilities = softmax(vals)
     return compatibilities @ values 
 
-@partial(jit, static_argnums=(8, ))
-def multihead_attention(I, weights_q, weights_k, weights_v, weight_o, num_heads=4):
+@partial(jit, static_argnums=(5, ))
+def multihead_attention(I, weights_q, weights_k, weights_v, weight_o, num_heads=2):
+    global dv
     # the queries and keys are of dimension dmodel (the embedding dimension)
     # weights_q, k, and v are 3 dimensional matrices of dimension num_heads x dmodel x dk (dv)
     #weight_o is of size num_heads*dv x dmodel, and converts the concatenated outputs of the heads into the dmodel dimension - a linear transformation
     #not parallelizing, i dont got the hardware for that
-    batched_scaled_dot_attention = vmap(scaled_dot_attention, in_axes=(0, 0, 0, None))
+    batched_scaled_dot_attention = vmap(scaled_dot_attention, in_axes=(0, 0, 0))
     batched_queries = I @ weights_q # vectorize over the heads dimensions
     batched_keys = I @ weights_k
     batched_values = I @ weights_v
     batched_attention = batched_scaled_dot_attention(batched_queries, batched_keys, batched_values) # doesnt have to be batched because of in_axes
-    return batched_attention.reshape((16, 16)) @ weight_o #dv, dk, dmodel/h = 64
+    return batched_attention.reshape((32, num_heads*dv)) @ weight_o #dv, dk, dmodel/h = 64
                                      
 @jit
 def layer_norm(X, G, b, eps=1e-6):
@@ -128,7 +131,7 @@ def encoder(I, Wq, Wk, Wv,
 
     return O
 
-@partial(jit, static_argnums=(26, ))
+@jit
 def decoder_generate(I, 
             persp_Wq, persp_Wk, persp_Wv, persp_Wo,
             G1, b1, G2, b2, 
@@ -263,9 +266,10 @@ def transformer_forward_encoder(X, enc_WQ, enc_WK, enc_WV, enc_persp_WQ, enc_per
     # oo think about a heirarchial transformer - where your predicting outputs by category level - what kind of sentence - what kind of word then - what is the word? etc
 
     return prev_out
-@partial(jit, static_argnums=(28,))
-def forward_pass_decoder_generate(prev_out, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_persp_WO, 
-                                    dmodel=32, max_tokens=32, num_layers=4):
+@partial(jit, static_argnums=(13,))
+def forward_pass_decoder_generate(prev_out, dec_persp_WQ, dec_persp_WK, dec_persp_WV,
+                                   dec_G1, dec_b1, dec_G2, dec_b2,
+                                     dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_persp_WO, num_layers=4):
     # would it be possible to have the decoder be tuned per output, yea it doesnt make a difference hmm
     #unpack params
     assert type(num_layers) is int, "num_layers must be an integer"
@@ -286,17 +290,22 @@ def adam(grad, weight, beta1 = 0.9, beta2 = 0.99, m=0,v=0,t=0, lr=0.001):
     weight = weight - lr * mhat / (jnp.sqrt(vhat) + 1e-8)
     return weight, m, v
 
-@partial(jit, static_argnums=(43,44))
-def forward_loss_generate(X, Y, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, 
-                          dec_persp_WO, final_linear, num_layers=4, max_tokens=32):
+@partial(jit, static_argnums=(15,))
+def forward_loss_generate(X, Y,
+                           dec_persp_WQ, dec_persp_WK, dec_persp_WV,
+                             dec_G1, dec_b1, dec_G2, dec_b2,
+                               dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, 
+                          dec_persp_WO, final_linear, num_layers=4):
     #pass a forward pass
     assert type(num_layers) is int, "num_layers must be an integer"
     #see commits for the translate version of this function.
     decoder_out = forward_pass_decoder_generate(X, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, 
                                                 dec_persp_WO, num_layers)
-    out = jnp.nn.functions.softmax(decoder_out @ final_linear)
+    out = softmax(decoder_out @ final_linear)
     #compute loss
-    loss += jnp.sum(jnp.log(out) * Y)
+    loss = jnp.sum(jnp.log(out) * Y)
+    jax.debug.print("Y {x}", x=Y)
+    jax.debug.print("out {x}", x=out)
     return loss, out
 
 #this is largely wrong, will be corrected later.
@@ -330,31 +339,39 @@ def transformer_train_translation(X, Y, encoder_params, decoder_params, final_li
     pass # for now
 
 def transformer_train_generation(X, Y, decoder_params, final_linear, iters):
-    global num_layers
+    global num_layers, char_to_idx
     dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_persp_WO = decoder_params
     #prepare the X array, where X here is a matrix of examples only , make them to be one at a time
     #make a new dimension, the dimension of training examples:
-    if len(X.shape) == 1:
+    if len(X.shape) == 2:
         X = jnp.expand_dims(X, axis=0)
         #extract each of the second dimension into the first dimension, and make the second dimension a single element 
         X = jnp.reshape(X, (X.shape[1], X.shape[2],  1)) 
+        X_new = jnp.zeros((X.shape[0], X.shape[1], len(char_to_idx)))
+        X_new.at[jnp.arange(X.shape[0]), X].set(1)
+        X=X_new
         #do the same to y
-        Y = jnp.expand_dims(X, axis=0)
-        Y = jnp.reshape(X, (X.shape[1], X.shape[2],  1)) 
+        Y = jnp.expand_dims(Y, axis=0)
+        Y = jnp.reshape(Y, (Y.shape[1], Y.shape[2],  1)) 
+        #one hot encodings
+        Y_new = jnp.zeros((Y.shape[0],Y.shape[1], len(char_to_idx)))
+        Y_new.at[jnp.arange(Y.shape[0]), Y].set(1)
+        Y = Y_new
     #otherwise can assume it came in the right shape, coz we need to parallelize over the training examples
     #change this, assuming that there is only one example that is being passed through:
-    argnums = [1+i for i in range(13)]
+    argnums = [2+i for i in range(13)]
     for _ in range(iters):
-        for j in range(X.shape): #parallelize?
+        for j in range(X.shape[0]): #parallelize?
             x = X[j,:,:]
             y = Y[j, :, :]
             #here the thing is, given our encoding dmodel = 1, thats kinda shet lol
-            loss, out, grads = jax.value_and_grad(forward_loss_generate, argnums=argnums)(x, y, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, 
+            (loss, out), grads = jax.value_and_grad(forward_loss_generate, argnums=argnums, has_aux=True)(x, y, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, 
                         dec_persp_WO, final_linear)
-            encoder_params = [adam(grads[i], encoder_params[i]) for i in range(len(encoder_params))]
-            final_linear = adam(grads[-1], final_linear)
+            decoder_params = [adam(grads[i], decoder_params[i])[0] for i in range(len(decoder_params))]
+            final_linear = adam(grads[-1], final_linear)[0]
+            
             if _ % 100 == 0:
-                print(decode(out))
+                # print(decode(out))
                 print(loss)
 
 def routine_start(mode):
@@ -434,7 +451,7 @@ def init_decoder_params():
     weights = [(num_heads, dmodel, dk, num_layers), (num_heads, dmodel, dk, num_layers), (num_heads, dmodel, dk, num_layers),
                   (block_size, dmodel, num_layers), (1, dmodel, num_layers), (block_size, dmodel, num_layers), (1, dmodel, num_layers),
                     (dmodel, dmodel * 4, num_layers), (dmodel * 4, dmodel, num_layers), (1, dmodel * 4, num_layers), (1, dmodel, num_layers),
-                         (num_heads * dv, block_size, num_layers)]
+                         (num_heads * dv, dmodel, num_layers)]
     
     if mode == "translation":
         #make sure to add these at the right position
@@ -458,7 +475,7 @@ def data_loader(data):
     return x, y
 
 if __name__ == "__main__":
-    routine_start()
+    routine_start("generation")
 
     
 """
