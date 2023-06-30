@@ -59,7 +59,7 @@ def scaled_dot_attention(queries, keys, values):
     #queries are the outputs from the decoder, keys and values are from the encoder. 
     
     vals = jnp.matmul(queries, keys.T)
-    vals.at[:, time_step:].set( -jnp.inf)
+    vals = jnp.where(jnp.tril(vals) == 0, size=vals.shape, fill_value= -jnp.inf) #mask out illegal positions
     compatibilities = softmax(vals/jnp.sqrt(queries.shape[-1]))
     return compatibilities @ values 
 
@@ -164,7 +164,7 @@ def decoder_generate(I,
 
     #feed forward network
     O = ffn(O, W_ff1, b_ff1, W_ff2, b_ff2) + O
-    O = layer_norm(O, G3, b3)
+    O = layer_norm(O, G2, b2)
 
     return O
 
@@ -245,7 +245,7 @@ def transformer_init(max_tokens=32, num_layers=4, num_heads=4, dmodel=32, dff=64
     enc_persp_WO, dec_persp_WO, dec_enc_persp_WO = jax.random.normal(split37, (max_tokens, dmodel, num_heads, num_layers)), jax.random.normal(split38, (max_tokens, dmodel, num_heads, num_layers)), jax.random.normal(split39, (max_tokens, dmodel, num_heads, num_layers))
 
     #return all these matrices
-    return enc_WQ, enc_WK, enc_WV, enc_persp_WQ, enc_persp_WK, enc_persp_WV, enc_G1, enc_b1, enc_G2, enc_b2, enc_G3, enc_b3, enc_W_ff1, enc_W_ff2, enc_b_ff1, enc_b_ff2, dec_WQ, dec_WK, dec_WV, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_G3, dec_b3, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_enc_WQ, dec_enc_WK, dec_enc_WV, dec_enc_persp_WQ, dec_enc_persp_WK, dec_enc_persp_WV, enc_persp_WO, dec_persp_WO, dec_enc_persp_WO
+    return enc_WQ, enc_WK, enc_WV, enc_persp_WQ, enc_persp_WK, enc_persp_WV, enc_G1, enc_b1, enc_G2, enc_b2, enc_W_ff1, enc_W_ff2, enc_b_ff1, enc_b_ff2, dec_WQ, dec_WK, dec_WV, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_G3, dec_b3, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_enc_WQ, dec_enc_WK, dec_enc_WV, dec_enc_persp_WQ, dec_enc_persp_WK, dec_enc_persp_WV, enc_persp_WO, dec_persp_WO, dec_enc_persp_WO
 
 def transformer_forward_encoder(X, enc_WQ, enc_WK, enc_WV, enc_persp_WQ, enc_persp_WK, enc_persp_WV, enc_G1, enc_b1, enc_G2, enc_b2, enc_W_ff1, enc_W_ff2, enc_b_ff1, enc_b_ff2, enc_persp_WO, num_layers=6):
     #unpack params
@@ -292,7 +292,7 @@ def forward_loss_generate(X, Y, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1
     #pass a forward pass
     assert type(num_layers) is int, "num_layers must be an integer"
     #see commits for the translate version of this function.
-    decoder_out = forward_pass_decoder_generate(dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, 
+    decoder_out = forward_pass_decoder_generate(X, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, 
                                                 dec_persp_WO, num_layers)
     out = jnp.nn.functions.softmax(decoder_out @ final_linear)
     #compute loss
