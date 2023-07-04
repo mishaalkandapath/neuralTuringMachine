@@ -5,7 +5,8 @@ from jax import grad, jit, vmap, pmap
 from functools import partial
 from jax.nn import softmax
 import math
-import time
+import numpy as np
+import sys
 # jax numpy is a drop in replacement, meaning you can use almost everything the same way. for example:"
 # jnp.arange(10), instead of np.arange(10); fairly intuitive. 
 
@@ -47,6 +48,8 @@ num_heads = 2
 num_layers = 3
 block_size = 32
 batch_size = 16
+
+jnp.set_printoptions(threshold=sys.maxsize)
 
 #Remember to write the bit on :
 #  - @partial
@@ -303,9 +306,9 @@ def forward_loss_generate(X, Y,
                                                 dec_persp_WO, num_layers)
     out = softmax(decoder_out @ final_linear)
     #compute loss
-    loss = jnp.sum(jnp.log(out) * Y)
-    jax.debug.print("Y {x}", x=Y)
-    jax.debug.print("out {x}", x=out)
+    # out = np.where(out < 1e-20, 1e-20, out)
+    # jax.debug.print("min {}", x=])
+    loss = jnp.sum(-jnp.log(out) * Y)
     return loss, out
 
 #this is largely wrong, will be corrected later.
@@ -338,24 +341,20 @@ def transformer_train_translation(X, Y, encoder_params, decoder_params, final_li
     #         print(loss)
     pass # for now
 
+
 def transformer_train_generation(X, Y, decoder_params, final_linear, iters):
     global num_layers, char_to_idx
     dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_persp_WO = decoder_params
     #prepare the X array, where X here is a matrix of examples only , make them to be one at a time
     #make a new dimension, the dimension of training examples:
     if len(X.shape) == 2:
-        X = jnp.expand_dims(X, axis=0)
-        #extract each of the second dimension into the first dimension, and make the second dimension a single element 
-        X = jnp.reshape(X, (X.shape[1], X.shape[2],  1)) 
-        X_new = jnp.zeros((X.shape[0], X.shape[1], len(char_to_idx)))
-        X_new.at[jnp.arange(X.shape[0]), X].set(1)
+        # #extract each of the second dimension into the first dimension, and make the second dimension a single element 
+        X_new = jnp.eye(dmodel)[X]
         X=X_new
         #do the same to y
-        Y = jnp.expand_dims(Y, axis=0)
-        Y = jnp.reshape(Y, (Y.shape[1], Y.shape[2],  1)) 
         #one hot encodings
-        Y_new = jnp.zeros((Y.shape[0],Y.shape[1], len(char_to_idx)))
-        Y_new.at[jnp.arange(Y.shape[0]), Y].set(1)
+        # Y_new.at[jnp.arange(Y.shape[0]),Y].set(1) 
+        Y_new = jnp.eye(dmodel)[Y] 
         Y = Y_new
     #otherwise can assume it came in the right shape, coz we need to parallelize over the training examples
     #change this, assuming that there is only one example that is being passed through:
@@ -371,11 +370,14 @@ def transformer_train_generation(X, Y, decoder_params, final_linear, iters):
             final_linear = adam(grads[-1], final_linear)[0]
             
             if _ % 100 == 0:
-                # print(decode(out))
+            # # print(jnp.argmax(out))
+                print(decode(out))
+            # print(out)
+                print(out.flatten()[jnp.argmin(out)])
                 print(loss)
 
 def routine_start(mode):
-    global char_to_idx, idx_to_char, batch_size
+    global char_to_idx, idx_to_char, batch_size, key
     assert mode in ["translation", "generation"], "invalid option, choose among 'translation' and 'generation'"
     #first take in the data
     f = open("input.txt")
@@ -399,7 +401,10 @@ def routine_start(mode):
     if mode == "translation":
         encoder_params = init_encoder_params()
     decoder_params = init_decoder_params()
-    final_linear_trans = jax.random.normal(key, (dmodel, len(char_to_idx.keys())))
+
+    # key, final_split = jax.random.split(key)
+    # final_linear_trans = jax.random.normal(final_split, (dmodel, len(char_to_idx.keys())))
+    final_linear_trans = np.random.normal(size=(dmodel, len(char_to_idx.keys())))
 
     if mode == "translation":
         transformer_train_translation(train_x, train_y, encoder_params, decoder_params, final_linear_trans, 1000)
@@ -417,6 +422,14 @@ def encode(text):
 
 def decode(arr):
     global idx_to_char
+    #get indices of 
+    # arr = jnp.squeeze(arr)
+    col_dices = jnp.argmax(arr, axis=1)
+    indices = jnp.arange(len(col_dices))
+    arr = arr[indices, col_dices]
+    arr = col_dices
+    arr = arr.tolist()
+    
     return "".join([idx_to_char[i] for i in arr])
 
 def init_encoder_params():
@@ -458,7 +471,9 @@ def init_decoder_params():
         pass #here you can add the other matrices for the encoder decoder attention block and layer norm
 
     for idx in range(len(weights)):
-        weights[idx] = jax.random.normal(splits[idx], weights[idx])
+        #non jaxifyhing randomization
+        weights[idx] = np.random.normal(size=weights[idx])
+        # weights[idx] = jax.random.normal(splits[idx], weights[idx])
     
     return tuple(weights)
 
