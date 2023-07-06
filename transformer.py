@@ -45,8 +45,8 @@ key = jax.random.PRNGKey(0) #central randomness key
 mode = "generation"
 dmodel = 65 #dimension of the embedding
 dk, dq, dv = 10,10,10 # for now, test numbers. 
-num_heads = 6
-num_layers = 6
+num_heads = 4
+num_layers = 4
 block_size = 32
 batch_size = 64
 
@@ -502,4 +502,9 @@ if __name__ == "__main__":
 At a certain point in time, you're computing one sequence type at a time. 
 in that time, you are going through a matrix of all the parts of that sequence. 
 so the main matrix is of size block_size * dmodel
+
+Some problems currently occuring
+ - Exploding Gradients I think ?
+
+Talk about jax jit compilations and tracing and printing
 """
