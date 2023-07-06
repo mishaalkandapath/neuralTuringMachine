@@ -7,6 +7,7 @@ from jax.nn import softmax
 import math
 import numpy as np
 import sys
+import matplotlib.pyplot as plt
 # jax numpy is a drop in replacement, meaning you can use almost everything the same way. for example:"
 # jnp.arange(10), instead of np.arange(10); fairly intuitive. 
 
@@ -47,7 +48,7 @@ dk, dq, dv = 10,10,10 # for now, test numbers.
 num_heads = 6
 num_layers = 6
 block_size = 32
-batch_size = 128
+batch_size = 64
 
 jnp.set_printoptions(threshold=sys.maxsize)
 
@@ -287,6 +288,8 @@ def forward_pass_decoder_generate(prev_out, dec_persp_WQ, dec_persp_WK, dec_pers
 
 @jit
 def adam(grad, weight, beta1 = 0.9, beta2 = 0.99, m=0,v=0,t=0, lr=0.001):
+    #clip the norms of the gradients
+    
     m = beta1 * m + (1 - beta1) * grad
     v = beta2 * v + (1 - beta2) * grad ** 2
     mhat = m / (1 - beta1 ** (t + 1))
@@ -352,43 +355,31 @@ def transformer_train_generation(X, Y, decoder_params, final_linear, iters):
         # #extract each of the second dimension into the first dimension, and make the second dimension a single element 
         X_new = jnp.eye(dmodel)[X]
         X=X_new
-        #do the same to y
-        #one hot encodings
-        # Y_new.at[jnp.arange(Y.shape[0]),Y].set(1) 
         Y_new = jnp.eye(dmodel)[Y] 
         Y = Y_new
     #otherwise can assume it came in the right shape, coz we need to parallelize over the training examples
     #change this, assuming that there is only one example that is being passed through:
     argnums = [2+i for i in range(13)]
-    prev_grads = None
-    prev_outs = None
-    for _ in range(iters):
-        for j in range(X.shape[0]): #parallelize?
-            x = X[j,:,:]
-            y = Y[j, :, :]
+    prev_grads = [[]] * 13
+
+    def generate_train_loop(x, y):
+        for _ in range(iters):
             #here the thing is, given our encoding dmodel = 1, thats kinda shet lol
             (loss, out), grads = jax.value_and_grad(forward_loss_generate, argnums=argnums, has_aux=True)(x, y, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, 
                         dec_persp_WO, final_linear)
             assert not jnp.isnan(loss) or prev_grads is not None, "loss is nan in the very beginning, reinit"
-            count = 1
-            while jnp.isnan(loss):
-                print("attempt ", count)
-                grads = [grad/(2**count) for grad in prev_grads]
-                decoder_params = [prev_out - grad for prev_out, grad in zip(prev_outs, grads)]
-                (loss, out), grads = jax.value_and_grad(forward_loss_generate, argnums=argnums, has_aux=True)(x, y, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2,
-                            dec_persp_WO, final_linear)
-                count +=1
             decoder_params = [adam(grads[i], decoder_params[i])[0] for i in range(len(decoder_params))]
             final_linear = adam(grads[-1], final_linear)[0]
-            prev_grads = grads
-            prev_outs = decoder_params
+
             if _ % 100 == 0:
-            # # print(jnp.argmax(out))
-                print([float(jnp.max(grad)) for grad in grads])
+                print("grads: ", [float(jnp.max(grad)) for grad in grads])
                 print(decode(out))
-                print(out.flatten()[jnp.argmin(out)])
                 print(loss)
                 assert not jnp.isnan(loss), "loss is nann, stopping"
+    
+    #parallelize over the training examples
+    parallelized_train_loop = jax.pmap(generate_train_loop)
+    parallelized_train_loop(X, Y)
 
 def routine_start(mode):
     global char_to_idx, idx_to_char, batch_size, key
