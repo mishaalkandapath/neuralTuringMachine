@@ -274,7 +274,7 @@ def transformer_forward_encoder(X, enc_WQ, enc_WK, enc_WV, enc_persp_WQ, enc_per
 @jit
 def forward_pass_decoder_generate(prev_out, dec_persp_WQ, dec_persp_WK, dec_persp_WV,
                                    dec_G1, dec_b1, dec_G2, dec_b2,
-                                     dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_persp_WO):
+                                     dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_persp_WO, final_linear):
     # would it be possible to have the decoder be tuned per output, yea it doesnt make a difference hmm
     #unpack params
     global num_layers
@@ -284,17 +284,17 @@ def forward_pass_decoder_generate(prev_out, dec_persp_WQ, dec_persp_WK, dec_pers
                         dec_G1[:,:, i], dec_b1[:,:, i], dec_G2[:,:, i], dec_b2[:,:, i],
                         dec_W_ff1[:,:, i], dec_W_ff2[:,:, i], dec_b_ff1[:,:, i], dec_b_ff2[:,:, i])
     #add linear and softmax
+    prev_out = softmax(prev_out @ final_linear)
     return prev_out
 
 @partial(jit, static_argnums=(2,))
 def adam(grad, weight, iters, beta1 = 0.9, beta2 = 0.98, m=0,v=0,t=0, lr=0.001):
     #clip the norms of the gradients
-    # grad = jnp.clip(grad, -1, 1)
     m = beta1 * m + (1 - beta1) * grad
     v = beta2 * v + (1 - beta2) * grad ** 2
     mhat = m / (1 - beta1 ** (t + 1))
     vhat = v / (1 - beta2 ** (t + 1))
-    lr = (dmodel ** (-0.5)) * min(iters**(-0.5), iters * (2500 ** (-1.5)))
+    # lr = (dmodel ** (-0.5)) * min(iters**(-0.5), iters * (2500 ** (-1.5)))
     weight = weight - lr * mhat / (jnp.sqrt(vhat) + 1e-9)
     return weight, m, v
 
@@ -304,17 +304,19 @@ def forward_loss_generate(X, Y,
                              dec_G1, dec_b1, dec_G2, dec_b2,
                                dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, 
                           dec_persp_WO, final_linear):
-    #pass a forward pass
-    global num_layers
-    #see commits for the translate version of this function.
-    decoder_out = forward_pass_decoder_generate(X, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, 
-                                                dec_persp_WO)
-    out = softmax(decoder_out @ final_linear)
-    #compute loss
-    # out = np.where(out < 1e-20, 1e-20, out)
-    # jax.debug.print("min {}", x=])
-    loss = jnp.sum(-jnp.log(out) * Y)
-    return loss, out
+    
+    def non_vectorized(x, y):
+        probs = forward_pass_decoder_generate(x, dec_persp_WQ, dec_persp_WK, dec_persp_WV,
+                             dec_G1, dec_b1, dec_G2, dec_b2,
+                               dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, 
+                          dec_persp_WO, final_linear)
+        loss = jnp.sum(-jnp.log(probs) * y)
+        return loss, probs
+
+    batched_losses, batched_probs = vmap(non_vectorized)(X, Y)
+    loss = jnp.sum(batched_losses)
+        
+    return loss, batched_probs
 
 #this is largely wrong, will be corrected later.
 def transformer_train_translation(X, Y, encoder_params, decoder_params, final_linear, iters):
@@ -369,29 +371,34 @@ def transformer_train_generation(X, Y, decoder_params, final_linear, iters):
     prev_params = [[]] * 13
     losses=[]
     count=1
-    for _ in progressbar.progressbar(range(iters), redirect_stdout=True):
-        for j in range(X.shape[0]):
-            x, y = X[j], Y[j]
-            #here the thing is, given our encoding dmodel = 1, thats kinda shet lol
-            (loss, out), grads = jax.value_and_grad(forward_loss_generate, argnums=argnums, has_aux=True)(x, y, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_persp_WO, final_linear)
-            assert not jnp.isnan(loss) or prev_grads is not None, "loss is nan in the very beginning, reinit"
-            decoder_params = [adam(grads[i], decoder_params[i], count)[0] for i in range(len(decoder_params))]
-            final_linear = adam(grads[-1], final_linear, count)[0]
-            losses+=[loss]
+    for _ in progressbar.progressbar(range(iters*100), redirect_stdout=True):
+        # for j in range(X.shape[0]):
+        # x, y = X[j], Y[j]
+        #here the thing is, given our encoding dmodel = 1, thats kinda shet lol
+        (loss, out), grads = jax.value_and_grad(forward_loss_generate, argnums=argnums, has_aux=True)(X, Y, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_persp_WO, final_linear)
+        assert not jnp.isnan(loss) or prev_grads is not None, "loss is nan in the very beginning, reinit"
+        losses+=[loss]
 
-            #write all the parameters to their respective files:
-            param_names = ['persp_WQs', 'persp_WKs', 'persp_WVs',  'G1s', 'b1s', 'G2s', 'b2s', 'Wff1s', 'Wff2s',  'bff1s', 'bff2s', 'persp_WOs', 'final_lins']
-            for i in range(len(decoder_params)):
-                jnp.save("weights/"+param_names[i]+"/"+str((_))+"_"+str(j), decoder_params[i])
-            jnp.save("weights/"+param_names[-1]+"/"+str((_))+"_"+str(j), final_linear)
-            count+=1
-        if _ % 100 == 0 and _ != 0:
-            print(decode(out))
-            print(decode(y))
+        #write all the parameters to their respective files:
+        
+        # param_names = ['persp_WQs', 'persp_WKs', 'persp_WVs',  'G1s', 'b1s', 'G2s', 'b2s', 'Wff1s', 'Wff2s',  'bff1s', 'bff2s', 'persp_WOs', 'final_lins']
+        # for i in range(len(decoder_params)):
+        #     jnp.save("weights/"+param_names[i]+"/"+str((_))+"_"+str(j), decoder_params[i])
+        # jnp.save("weights/"+param_names[-1]+"/"+str((_))+"_"+str(j), final_linear)
+        decoder_params = [adam(grads[k], decoder_params[k], count)[0] for k in range(len(decoder_params))]
+        final_linear = adam(grads[-1], final_linear, count)[0]
+        if _ % 1000 == 0 and _ != 0:
+            print(decode(out[-1]))
+            print(decode(Y[-1]))
             # print(loss)
             plt.plot(losses)
             plt.savefig("losses.png")
-            assert not jnp.isnan(loss), "loss is nann, stopping"
+            # assert not jnp.isnan(loss), "loss is nann, stopping"
+            param_names = ['persp_WQs', 'persp_WKs', 'persp_WVs',  'G1s', 'b1s', 'G2s', 'b2s', 'Wff1s', 'Wff2s',  'bff1s', 'bff2s', 'persp_WOs', 'final_lins']
+            for idx,param in enumerate(param_names[:-1]):
+                if jnp.isnan(decoder_params[idx]).any():
+                    print(param + " is empty likw: ", [decoder_params + [final_linear]][idx])
+            assert not any(jnp.isnan(param).any() for param in decoder_params), "wooops"
 
 def routine_start(mode):
     global char_to_idx, idx_to_char, batch_size, key
@@ -505,7 +512,11 @@ def init_decoder_params():
     for idx in range(len(weights)):
         #non jaxifyhing randomization for now
         # weights[idx] = np.random.normal(size=weights[idx])
-        weights[idx] = np.random.uniform(-limit, limit, size=weights[idx])
+        if idx in range(2): #coz they are 4D 
+            limit = np.sqrt(2 / float(weights[idx][1] + weights[idx][2]))
+        else:
+            limit = np.sqrt(2/ float(weights[idx][0] + weights[idx][1]))
+        weights[idx] = np.random.normal(0, limit, size=weights[idx])#np.random.uniform(-limit, limit, size=weights[idx])
         # weights[idx] = jax.random.normal(splits[idx], weights[idx])
     
     return tuple(weights)
