@@ -4,10 +4,10 @@ from jax import make_jaxpr
 from jax import grad, jit, vmap, pmap
 from functools import partial
 from jax.nn import softmax
-import math
 import numpy as np
 import sys
 import matplotlib.pyplot as plt
+import progressbar
 # jax numpy is a drop in replacement, meaning you can use almost everything the same way. for example:"
 # jnp.arange(10), instead of np.arange(10); fairly intuitive. 
 
@@ -43,7 +43,7 @@ idx_to_char = {}
 key = jax.random.PRNGKey(0) #central randomness key
 
 mode = "generation"
-dmodel = 65 #dimension of the embedding
+dmodel = 66#dimension of the embedding
 dk, dq, dv = 10,10,10 # for now, test numbers. 
 num_heads = 4
 num_layers = 4
@@ -289,7 +289,7 @@ def forward_pass_decoder_generate(prev_out, dec_persp_WQ, dec_persp_WK, dec_pers
 @jit
 def adam(grad, weight, beta1 = 0.9, beta2 = 0.99, m=0,v=0,t=0, lr=0.001):
     #clip the norms of the gradients
-    
+    grad = jnp.clip(grad, -1, 1)
     m = beta1 * m + (1 - beta1) * grad
     v = beta2 * v + (1 - beta2) * grad ** 2
     mhat = m / (1 - beta1 ** (t + 1))
@@ -357,29 +357,41 @@ def transformer_train_generation(X, Y, decoder_params, final_linear, iters):
         X=X_new
         Y_new = jnp.eye(dmodel)[Y] 
         Y = Y_new
+        #add positional encodings
+        x_old = X
+        vectorized_pos = vmap(encode_with_positional, in_axes=0)
+        for k in range(X.shape[0]):
+            X = X.at[k].set(encode_with_positional(X[k]))
     #otherwise can assume it came in the right shape, coz we need to parallelize over the training examples
     #change this, assuming that there is only one example that is being passed through:
-    argnums = [2+i for i in range(13)]
+    argnums = [2+i for i in range(len(decoder_params)+1)]
     prev_grads = [[]] * 13
+    prev_params = [[]] * 13
+    losses=[]
 
-    def generate_train_loop(x, y):
-        for _ in range(iters):
+    for _ in progressbar.progressbar(range(iters), redirect_stdout=True):
+        for j in range(X.shape[0]):
+            x, y = X[j], Y[j]
             #here the thing is, given our encoding dmodel = 1, thats kinda shet lol
-            (loss, out), grads = jax.value_and_grad(forward_loss_generate, argnums=argnums, has_aux=True)(x, y, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, 
-                        dec_persp_WO, final_linear)
+            (loss, out), grads = jax.value_and_grad(forward_loss_generate, argnums=argnums, has_aux=True)(x, y, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_persp_WO, final_linear)
             assert not jnp.isnan(loss) or prev_grads is not None, "loss is nan in the very beginning, reinit"
             decoder_params = [adam(grads[i], decoder_params[i])[0] for i in range(len(decoder_params))]
             final_linear = adam(grads[-1], final_linear)[0]
+            losses+=[loss]
 
-            if _ % 100 == 0:
-                print("grads: ", [float(jnp.max(grad)) for grad in grads])
-                print(decode(out))
-                print(loss)
-                assert not jnp.isnan(loss), "loss is nann, stopping"
-    
-    #parallelize over the training examples
-    parallelized_train_loop = jax.pmap(generate_train_loop)
-    parallelized_train_loop(X, Y)
+            #write all the parameters to their respective files:
+            param_names = ['persp_WQs', 'persp_WKs', 'persp_WVs',  'G1s', 'b1s', 'G2s', 'b2s', 'Wff1s', 'Wff2s',  'bff1s', 'bff2s', 'persp_WOs', 'final_lins']
+            for i in range(len(decoder_params)):
+                jnp.save("weights/"+param_names[i]+"/"+str( (_+1) * (j+1)), decoder_params[i])
+            jnp.save("weights/"+param_names[-1]+"/"+str( (_+1)*(j+1)), final_linear)
+
+        if _ % 100 == 0 and _ != 0:
+            print(decode(out))
+            print(decode(y))
+            # print(loss)
+            plt.plot(losses)
+            plt.savefig("losses.png")
+            assert not jnp.isnan(loss), "loss is nann, stopping"
 
 def routine_start(mode):
     global char_to_idx, idx_to_char, batch_size, key
@@ -388,6 +400,7 @@ def routine_start(mode):
     f = open("input.txt")
     chars = sorted(list(set(f.read())))
     f.seek(0)
+    chars = ['<PAD>'] + chars
     char_to_idx = {ch:i for i, ch in enumerate(chars)}
     idx_to_char = {i:ch for i, ch in enumerate(chars)} # encoder and decoder mappings, 
 
@@ -420,10 +433,24 @@ def encode(text):
     global char_to_idx
     return [char_to_idx[ch] for ch in text]
 
-# def encode_with_positional(text): #not neccessary for this dumb d=1 data. 
-#     #applying the same positional encoding as in paper
-#     init_embed = encode(text)
-#     pos_encod = jnp.sin(jnp.arange(len(init_embed)) / (10000 ** (2 */ len(init_embed)) for i in range(len(init_embed)))
+def encode_with_positional(sequence_matrix):
+    global dmodel
+    denoms = jnp.asarray([10000 ** ((i//2)/dmodel) for i in range(dmodel)])
+    #repeat denoms for each row, for block_size nmber of times
+    denoms = jnp.expand_dims(denoms, axis=0)
+    denoms = jnp.repeat(denoms, block_size, axis=0)
+    # print(denoms)
+    positions = jnp.arange(block_size)
+    positions = jnp.expand_dims(positions, axis=0)
+    positions = jnp.repeat(positions.T, dmodel, axis=1)
+    positions = positions.astype(jnp.float32)
+    old_positions = positions
+    positions = positions.at[:,::2].set(jnp.sin(positions / denoms)[:, ::2])
+    positions = positions.at[:,1::2].set(jnp.cos(positions / denoms)[:, 1::2])
+    sequence_matrix = jnp.asarray(sequence_matrix, dtype=jnp.float32)
+    sequence_matrix += positions
+    
+    return sequence_matrix
 
 def decode(arr):
     global idx_to_char
@@ -476,7 +503,7 @@ def init_decoder_params():
         pass #here you can add the other matrices for the encoder decoder attention block and layer norm
 
     for idx in range(len(weights)):
-        #non jaxifyhing randomization
+        #non jaxifyhing randomization for now
         weights[idx] = np.random.normal(size=weights[idx])
         # weights[idx] = jax.random.normal(splits[idx], weights[idx])
     
@@ -496,6 +523,9 @@ def data_loader(data):
 
 if __name__ == "__main__":
     routine_start("generation")
+
+    # final_lins = jnp.load("weights/persp_WQs/26624.npy")
+    # print(final_lins)
 
     
 """
