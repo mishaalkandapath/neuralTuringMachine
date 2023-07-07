@@ -289,7 +289,7 @@ def forward_pass_decoder_generate(prev_out, dec_persp_WQ, dec_persp_WK, dec_pers
 @jit
 def adam(grad, weight, beta1 = 0.9, beta2 = 0.99, m=0,v=0,t=0, lr=0.001):
     #clip the norms of the gradients
-    grad = jnp.clip(grad, -1, 1)
+    grad = jnp.clip(grad, -100, 100)
     m = beta1 * m + (1 - beta1) * grad
     v = beta2 * v + (1 - beta2) * grad ** 2
     mhat = m / (1 - beta1 ** (t + 1))
@@ -353,15 +353,14 @@ def transformer_train_generation(X, Y, decoder_params, final_linear, iters):
     #make a new dimension, the dimension of training examples:
     if len(X.shape) == 2:
         # #extract each of the second dimension into the first dimension, and make the second dimension a single element 
+        #insert a new column of zeros at the start of columns
+        X = np.insert(X, 0, 0, axis=1)
         X_new = jnp.eye(dmodel)[X]
         X=X_new
         Y_new = jnp.eye(dmodel)[Y] 
         Y = Y_new
         #add positional encodings
-        x_old = X
-        vectorized_pos = vmap(encode_with_positional, in_axes=0)
-        for k in range(X.shape[0]):
-            X = X.at[k].set(encode_with_positional(X[k]))
+        X = vmap(encode_with_positional, in_axes=0)(X)
     #otherwise can assume it came in the right shape, coz we need to parallelize over the training examples
     #change this, assuming that there is only one example that is being passed through:
     argnums = [2+i for i in range(len(decoder_params)+1)]
@@ -516,9 +515,9 @@ def data_loader(data):
     #batchsize= 4
     #there block_size = 8, context vector, the lnegth of rthe sequence to predict
     global key
-    indices = jax.random.randint(key, (batch_size, ), 0, len(data) - block_size)
-    x = jnp.stack([data[idx:idx + block_size] for idx in indices])
-    y = jnp.stack([data[idx + 1:idx + block_size + 1] for idx in indices])
+    indices = jax.random.randint(key, (batch_size, ), 0, len(data) - block_size - 1)
+    x = jnp.stack([data[idx:idx + block_size - 1] for idx in indices])
+    y = jnp.stack([data[idx:idx + block_size] for idx in indices])
     return x, y
 
 if __name__ == "__main__":
