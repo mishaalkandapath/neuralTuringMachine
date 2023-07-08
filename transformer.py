@@ -43,14 +43,20 @@ idx_to_char = {}
 key = jax.random.PRNGKey(0) #central randomness key
 
 mode = "generation"
-dmodel = 66#dimension of the embedding
-dk, dq, dv = 10,10,10 # for now, test numbers. 
-num_heads = 4
+dmodel = 65#dimension of the embedding
+dk, dq, dv = 4, 4, 4 # for now, test numbers. 
+num_heads = 16
 num_layers = 4
 block_size = 32
-batch_size = 64
+batch_size = 16
+dropout_prob = 0.2
 
 jnp.set_printoptions(threshold=sys.maxsize)
+
+@jit
+def dropout(W):
+    W *= np.random.binomial([np.ones(W.shape)],1-dropout_prob)[0] * (1.0/(1-dropout_prob))
+    return W
 
 #Remember to write the bit on :
 #  - @partial
@@ -65,8 +71,8 @@ def scaled_dot_attention(queries, keys, values):
     vals = jnp.where(jnp.tril(vals) == 0, -jnp.inf, vals) #mask out illegal positions
     dim_arr = jnp.asarray([queries.shape[-1]])
     vals = vals/(jnp.sqrt(dim_arr)[0])
-   
-    compatibilities = softmax(vals)
+    compatibilities = softmax(vals, axis=-1)
+    compatibilities = dropout(compatibilities)
     return compatibilities @ values 
 
 @jit
@@ -81,18 +87,18 @@ def multihead_attention(I, weights_q, weights_k, weights_v, weight_o):
     batched_keys = I @ weights_k
     batched_values = I @ weights_v
     batched_attention = batched_scaled_dot_attention(batched_queries, batched_keys, batched_values) # doesnt have to be batched because of in_axes
-    return batched_attention.reshape((32, num_heads*dv)) @ weight_o #dv, dk, dmodel/h = 64
+    return dropout(batched_attention.reshape((block_size, num_heads*dv))) @ weight_o #dv, dk, dmodel/h = 64
                                      
 @jit
 def layer_norm(X, G, b, eps=1e-6):
     #UNDERSTAND WHY THIS WORKS - for now, something to do with computational time, exploding gradients or something
     mean_mat = jnp.mean(X, axis=-1, keepdims=True) #keepdims for proper broadcasting
-    std_mat = jnp.std(X, axis=-1, keepdims=True)
-    return G*(X-mean_mat)/(std_mat+eps) + b # G and B are learnable to tone down normalization when necessary
+    std_mat = jnp.var(X, axis=-1, keepdims=True)
+    return G*(X-mean_mat)/jnp.sqrt(std_mat+eps) + b # G and B are learnable to tone down normalization when necessary
 
 @jit
 def ffn(X, W1, b1, W2, b2):
-    return jnp.maximum(0, X @ W1 + b1) @ W2 + b2
+    return dropout(jnp.maximum(0, X @ W1 + b1) @ W2 + b2)
 
 # important to have pure functions
 @jit
@@ -124,14 +130,14 @@ def encoder(I, Wq, Wk, Wv,
     # first component the multi head self-attention 
     #it takes as input some queries, keys and values that you produce using linear transformations on the input I
     # the queries, keys and values are of dimension dmodel
-    Queries, Keys, Values = I @ Wq, I @ Wk, I @ Wv #where I is the matrix of input tokens
-    O = multihead_attention(Queries, Keys, Values, persp_Wq, persp_Wk, persp_Wv, persp_Wo) + I
     #layer norm 
     O = layer_norm(O, G1, b1)
+    Queries, Keys, Values = I @ Wq, I @ Wk, I @ Wv #where I is the matrix of input tokens
+    O = multihead_attention(Queries, Keys, Values, persp_Wq, persp_Wk, persp_Wv, persp_Wo) + I
 
     #feed forward network
-    O = ffn(O, W_ff1, b_ff1, W_ff2, b_ff2) + O
     O = layer_norm(O, G2, b2)
+    O = ffn(O, W_ff1, b_ff1, W_ff2, b_ff2) + O
 
     return O
 
@@ -273,7 +279,7 @@ def transformer_forward_encoder(X, enc_WQ, enc_WK, enc_WV, enc_persp_WQ, enc_per
 
 @jit
 def forward_pass_decoder_generate(prev_out, dec_persp_WQ, dec_persp_WK, dec_persp_WV,
-                                   dec_G1, dec_b1, dec_G2, dec_b2,
+                                   dec_G1, dec_b1, dec_G2, dec_b2, dec_G3, dec_b3,
                                      dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_persp_WO, final_linear):
     # would it be possible to have the decoder be tuned per output, yea it doesnt make a difference hmm
     #unpack params
@@ -284,30 +290,31 @@ def forward_pass_decoder_generate(prev_out, dec_persp_WQ, dec_persp_WK, dec_pers
                         dec_G1[:,:, i], dec_b1[:,:, i], dec_G2[:,:, i], dec_b2[:,:, i],
                         dec_W_ff1[:,:, i], dec_W_ff2[:,:, i], dec_b_ff1[:,:, i], dec_b_ff2[:,:, i])
     #add linear and softmax
+    prev_out = layer_norm(prev_out, dec_G3, dec_b3)
     prev_out = softmax(prev_out @ final_linear)
     return prev_out
 
 @partial(jit, static_argnums=(2,))
-def adam(grad, weight, iters, beta1 = 0.9, beta2 = 0.98, m=0,v=0,t=0, lr=0.001):
+def adam(grad, weight, iters=0, beta1 = 0.9, beta2 = 0.999, m=0,v=0, lr=0.001):
     #clip the norms of the gradients
     m = beta1 * m + (1 - beta1) * grad
     v = beta2 * v + (1 - beta2) * grad ** 2
-    mhat = m / (1 - beta1 ** (t + 1))
-    vhat = v / (1 - beta2 ** (t + 1))
-    # lr = (dmodel ** (-0.5)) * min(iters**(-0.5), iters * (2500 ** (-1.5)))
+    mhat = m / (1 - beta1 ** (iters + 1))
+    vhat = v / (1 - beta2 ** (iters + 1))
+    # lr = (dmodel ** (-0.5)) * min(iters**(-0.5), iters * (2000 ** (-1.5)))
     weight = weight - lr * mhat / (jnp.sqrt(vhat) + 1e-9)
     return weight, m, v
 
 @jit
 def forward_loss_generate(X, Y,
                            dec_persp_WQ, dec_persp_WK, dec_persp_WV,
-                             dec_G1, dec_b1, dec_G2, dec_b2,
+                             dec_G1, dec_b1, dec_G2, dec_b2,dec_G3, dec_b3, 
                                dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, 
                           dec_persp_WO, final_linear):
     
     def non_vectorized(x, y):
         probs = forward_pass_decoder_generate(x, dec_persp_WQ, dec_persp_WK, dec_persp_WV,
-                             dec_G1, dec_b1, dec_G2, dec_b2,
+                             dec_G1, dec_b1, dec_G2, dec_b2, dec_G3, dec_b3,
                                dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, 
                           dec_persp_WO, final_linear)
         loss = jnp.sum(-jnp.log(probs) * y)
@@ -351,13 +358,13 @@ def transformer_train_translation(X, Y, encoder_params, decoder_params, final_li
 
 def transformer_train_generation(X, Y, decoder_params, final_linear, iters):
     global num_layers, char_to_idx
-    dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_persp_WO = decoder_params
+    dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_G3, dec_b3, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_persp_WO = decoder_params
     #prepare the X array, where X here is a matrix of examples only , make them to be one at a time
     #make a new dimension, the dimension of training examples:
     if len(X.shape) == 2:
         # #extract each of the second dimension into the first dimension, and make the second dimension a single element 
         #insert a new column of zeros at the start of columns
-        X = np.insert(X, 0, 0, axis=1)
+        # X = np.insert(X, 0, 0, axis=1)
         X_new = jnp.eye(dmodel)[X]
         X=X_new
         Y_new = jnp.eye(dmodel)[Y] 
@@ -367,15 +374,17 @@ def transformer_train_generation(X, Y, decoder_params, final_linear, iters):
     #otherwise can assume it came in the right shape, coz we need to parallelize over the training examples
     #change this, assuming that there is only one example that is being passed through:
     argnums = [2+i for i in range(len(decoder_params)+1)]
-    prev_grads = [[]] * 13
-    prev_params = [[]] * 13
+    prev_grads = [[]] * 15
+    prev_params = [[]] * 15
+    m=[0]*15
+    v=[0]*15
     losses=[]
     count=1
     for _ in progressbar.progressbar(range(iters*100), redirect_stdout=True):
         # for j in range(X.shape[0]):
         # x, y = X[j], Y[j]
         #here the thing is, given our encoding dmodel = 1, thats kinda shet lol
-        (loss, out), grads = jax.value_and_grad(forward_loss_generate, argnums=argnums, has_aux=True)(X, Y, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_persp_WO, final_linear)
+        (loss, out), grads = jax.value_and_grad(forward_loss_generate, argnums=argnums, has_aux=True)(X, Y, dec_persp_WQ, dec_persp_WK, dec_persp_WV, dec_G1, dec_b1, dec_G2, dec_b2, dec_G3, dec_b3, dec_W_ff1, dec_W_ff2, dec_b_ff1, dec_b_ff2, dec_persp_WO, final_linear)
         assert not jnp.isnan(loss) or prev_grads is not None, "loss is nan in the very beginning, reinit"
         losses+=[loss]
 
@@ -385,19 +394,24 @@ def transformer_train_generation(X, Y, decoder_params, final_linear, iters):
         # for i in range(len(decoder_params)):
         #     jnp.save("weights/"+param_names[i]+"/"+str((_))+"_"+str(j), decoder_params[i])
         # jnp.save("weights/"+param_names[-1]+"/"+str((_))+"_"+str(j), final_linear)
-        decoder_params = [adam(grads[k], decoder_params[k], count)[0] for k in range(len(decoder_params))]
-        final_linear = adam(grads[-1], final_linear, count)[0]
-        if _ % 1000 == 0 and _ != 0:
+        decoder_params = [adam(grads[k], decoder_params[k], count, m=m[k], v=v[k]) for k in range(len(decoder_params))]
+        for k in range(len(decoder_params)):
+            m[k] = decoder_params[k][1]
+            v[k] = decoder_params[k][2]
+            decoder_params[k] = decoder_params[k][0]
+        final_linear, m[-1], v[-1] = adam(grads[-1], final_linear, count, m=m[-1], v=v[-1])
+        count+=1
+        if _ % 500 == 0 and _ != 0:
             print(decode(out[-1]))
             print(decode(Y[-1]))
-            # print(loss)
+            # print(len(losses))
             plt.plot(losses)
             plt.savefig("losses.png")
             # assert not jnp.isnan(loss), "loss is nann, stopping"
             param_names = ['persp_WQs', 'persp_WKs', 'persp_WVs',  'G1s', 'b1s', 'G2s', 'b2s', 'Wff1s', 'Wff2s',  'bff1s', 'bff2s', 'persp_WOs', 'final_lins']
             for idx,param in enumerate(param_names[:-1]):
                 if jnp.isnan(decoder_params[idx]).any():
-                    print(param + " is empty likw: ", [decoder_params + [final_linear]][idx])
+                    print(param + " is empty")#, [decoder_params + [final_linear]][idx])
             assert not any(jnp.isnan(param).any() for param in decoder_params), "wooops"
 
 def routine_start(mode):
@@ -407,9 +421,9 @@ def routine_start(mode):
     f = open("input.txt")
     chars = sorted(list(set(f.read())))
     f.seek(0)
-    chars = ['<PAD>'] + chars
+    # chars = ['<PAD>'] + chars
     char_to_idx = {ch:i for i, ch in enumerate(chars)}
-    idx_to_char = {i:ch for i, ch in enumerate(chars)} # encoder and decoder mappings, 
+    idx_to_char = {i:ch for i, ch in enumerate(chars)} # encoder and decoder mappings,
 
     #lets get the data:
     data = f.read()
@@ -451,7 +465,7 @@ def encode_with_positional(sequence_matrix):
     positions = jnp.expand_dims(positions, axis=0)
     positions = jnp.repeat(positions.T, dmodel, axis=1)
     positions = positions.astype(jnp.float32)
-    old_positions = positions
+    
     positions = positions.at[:,::2].set(jnp.sin(positions / denoms)[:, ::2])
     positions = positions.at[:,1::2].set(jnp.cos(positions / denoms)[:, 1::2])
     sequence_matrix = jnp.asarray(sequence_matrix, dtype=jnp.float32)
@@ -501,7 +515,7 @@ def init_decoder_params():
     #the first query etc matrices simply transform the embeddings within the same space - not needed, can be learnt directly by the multihead mechanism, so removing (coz its a linearity).
     #the perspectives put them onto another space
     weights = [(num_heads, dmodel, dk, num_layers), (num_heads, dmodel, dk, num_layers), (num_heads, dmodel, dk, num_layers),
-                  (block_size, dmodel, num_layers), (1, dmodel, num_layers), (block_size, dmodel, num_layers), (1, dmodel, num_layers),
+                  (block_size, dmodel, num_layers), (block_size, dmodel, num_layers), (block_size, dmodel, num_layers), (block_size, dmodel, num_layers), (block_size, dmodel), (block_size, dmodel),
                     (dmodel, dmodel * 4, num_layers), (dmodel * 4, dmodel, num_layers), (1, dmodel * 4, num_layers), (1, dmodel, num_layers),
                          (num_heads * dv, dmodel, num_layers)]
     
@@ -512,11 +526,19 @@ def init_decoder_params():
     for idx in range(len(weights)):
         #non jaxifyhing randomization for now
         # weights[idx] = np.random.normal(size=weights[idx])
-        if idx in range(2): #coz they are 4D 
-            limit = np.sqrt(2 / float(weights[idx][1] + weights[idx][2]))
+        if idx in range(3, 8) and idx % 2 == 1:
+            weights[idx] = jnp.ones(weights[idx])
+            continue
+        elif idx in range(3,8) and idx % 2 == 0:
+            weights[idx] = jnp.zeros(weights[idx])
+            continue
+        elif idx in range(2): #coz they are 4D 
+            # limit = np.sqrt(2 / float(weights[idx][1] + weights[idx][2]))
+            limit = np.sqrt(weights[idx[1]])
         else:
-            limit = np.sqrt(2/ float(weights[idx][0] + weights[idx][1]))
-        weights[idx] = np.random.normal(0, limit, size=weights[idx])#np.random.uniform(-limit, limit, size=weights[idx])
+            # limit = np.sqrt(2/ float(weights[idx][0] + weights[idx][1]))
+            limit = limit = np.sqrt(weights[idx[0]])
+        weights[idx] = np.random.uniform(-limit, limit, size=weights[idx]) ##np.random.normal(0, limit, size=weights[idx])
         # weights[idx] = jax.random.normal(splits[idx], weights[idx])
     
     return tuple(weights)
@@ -528,9 +550,9 @@ def data_loader(data):
     #batchsize= 4
     #there block_size = 8, context vector, the lnegth of rthe sequence to predict
     global key
-    indices = jax.random.randint(key, (batch_size, ), 0, len(data) - block_size - 1)
-    x = jnp.stack([data[idx:idx + block_size - 1] for idx in indices])
-    y = jnp.stack([data[idx:idx + block_size] for idx in indices])
+    indices = jax.random.randint(key, (batch_size, ), 0, len(data) - block_size)
+    x = jnp.stack([data[idx:idx + block_size] for idx in indices])
+    y = jnp.stack([data[idx+1:idx + block_size+1] for idx in indices])
     return x, y
 
 if __name__ == "__main__":
