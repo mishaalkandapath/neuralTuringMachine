@@ -533,11 +533,11 @@ def init_decoder_params():
             weights[idx] = jnp.zeros(weights[idx])
             continue
         elif idx in range(2): #coz they are 4D 
-            # limit = np.sqrt(2 / float(weights[idx][1] + weights[idx][2]))
-            limit = np.sqrt(weights[idx[1]])
+            limit = np.sqrt(2 / float(weights[idx][1] + weights[idx][2]))
+            # limit = np.sqrt(weights[idx][1])
         else:
-            # limit = np.sqrt(2/ float(weights[idx][0] + weights[idx][1]))
-            limit = limit = np.sqrt(weights[idx[0]])
+            limit = np.sqrt(2/ float(weights[idx][0] + weights[idx][1]))
+            # limit = limit = np.sqrt(weights[idx][0])
         weights[idx] = np.random.uniform(-limit, limit, size=weights[idx]) ##np.random.normal(0, limit, size=weights[idx])
         # weights[idx] = jax.random.normal(splits[idx], weights[idx])
     
