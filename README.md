@@ -1,16 +1,12 @@
 # An NTM for language tasks
 ## Overview:
-This is a project where I seek to understand the transformer architecture in depth annd modify it with another architecture (NTM, Graves et al., 2016) to hopefully produce some interesting results in search problems prompted with language. I also intend to build everything from scratch and in JAX.
+This is a project where I seek to understand the transformer architecture in depth. I also intend to build everything from scratch and in JAX.
 ## Project Goals:
 - [ ] Take notes throughout the dev process
 - [ ] Understand Attention Mechanisms in seq2seq models
 - [ ] Implement a basic transformer from Attention Is All You Need (2017)
 - [ ] Train using some basic dataset
 - [ ] Complete gaps in knowledge (marked by hows)
-- [ ] Implement an NTM
-- [ ] Connect the two
-- [ ] Do some kool experiments
-- [ ] Upgrade to DNC
 ## A Transformer:
 ### Background:
 Before transformers came seq2seq models implemented with RNNs. These also used encoder decoder models where the encoder would read a word at a time from the input, encode all this into some representation and produce output tokens conditioned on this representation. In this way, the decoder only receives a sort of summarized input. The attention mechanism was introduced to help the decoder "attend" to various positions of input encodings (the word alignment is used to determine what input tokens output tokens "align" to, a consequence of attention mechanisms).<br>
