@@ -1,4 +1,4 @@
-# An NTM for language tasks
+# Building a Transformer
 ## Overview:
 This is a project where I seek to understand the transformer architecture in depth. I also intend to build everything from scratch and in JAX.
 ## Project Goals:
